@@ -219,10 +219,17 @@ pub fn backup_idle() -> Result<(usize,usize,usize), String> {
             if state.backed_up_titles.entry(destination.clone()).or_default().insert(id.clone()) {
                 dirty=true;
             }
+            // Also prune old revisions on an unchanged save, for existing users.
+            if cfg.backend=="webdav" {
+                if let Err(error)=webdav::keep_one_snapshot(&cfg,&folder,None) {
+                    failures+=1;
+                    eprintln!("[Checkpoint] Cloud retention failed for {id}: {error}");
+                }
+            }
             continue
         }
-        // An immutable timestamped revision avoids overwriting existing remote data.
-        // A revision is never pruned automatically. No delete or remote restore here.
+        // Upload a complete replacement first, then prune obsolete revisions.
+        // This preserves the previous snapshot if the new upload fails.
         let millis=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
         let revision=format!("{folder}/snapshots/{millis}-{}",save.signature);
         match upload(&cfg,Path::new(&save.path),&revision) {
@@ -232,6 +239,19 @@ pub fn backup_idle() -> Result<(usize,usize,usize), String> {
                 save_atomic(&path,&state)?;
                 dirty=false;
                 done+=1;
+                if cfg.backend=="webdav" {
+                    let revision_name=revision.rsplit('/').next().unwrap_or("");
+                    match webdav::keep_one_snapshot(&cfg,&folder,Some(revision_name)) {
+                        Ok(removed) if removed>0=>println!(
+                            "[Checkpoint] Removed {removed} older cloud snapshot(s) for {id}"
+                        ),
+                        Ok(_)=>{},
+                        Err(error)=>{
+                            failures+=1;
+                            eprintln!("[Checkpoint] Uploaded {id}, but remote cleanup failed: {error}");
+                        }
+                    }
+                }
             }
             Err(error) => {failures+=1;eprintln!("[Checkpoint] Backup failed for {id}: {error}");}
         }

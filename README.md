@@ -98,3 +98,9 @@ checkpoint-companion --restore-backup 'switch2/04007EF01F8AE000/legacy-account/P
 ```
 
 The companion refuses to restore while Eglantine is running, requires an existing discovered save directory, checks the remote completion marker and file count, downloads into a sibling staging directory, and **renames the entire original local save into a timestamped sibling backup** before replacing it. If installation fails, Checkpoint attempts to roll the original back. Do not delete the preserved folder until you've verified the restored save in-game. Selecting the target explicitly prevents accidental profile mismatches across devices. This still does **not** automatically synchronize or resolve conflicts. Native WebDAV only; existing rsync/rclone backups cannot be restored through this command.
+
+## Single-snapshot retention (native WebDAV)
+
+Checkpoint now keeps **one completed cloud snapshot per Switch 2 title ID, save layout, local profile and device** instead of indefinite timestamped revision history. On an updated save, it uploads and completes the new snapshot **before** deleting older snapshots from that same game/profile/device. An upload failure leaves prior snapshots intact. On the next idle backup pass, it also prunes older snapshots belonging to unchanged saves, including leftover incomplete snapshot directories when a complete copy exists. It never prunes other devices or profiles. Remote cleanup errors are reported rather than silently ignored.
+
+This applies to **native WebDAV**. Legacy `rclone` and `rsync` destinations still use the previous versioned-upload behavior. Nextcloud's own versioning and trash may retain deleted files and continue to consume server storage; configure Nextcloud retention separately if needed. The local pre-restore safety directory is still retained to protect your current save.

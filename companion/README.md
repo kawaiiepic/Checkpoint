@@ -53,3 +53,7 @@ Backup status distinguishes missing configuration from zero changes: `--backup-o
 ### Manual restore
 
 Run `--list-backups SWITCH2_TITLE_ID` to print complete native WebDAV snapshots. Then pass the exact snapshot path to `--restore-backup SNAPSHOT_REF --to EXISTING_LOCAL_SAVE_PATH --confirm-restore`. The emulator must be closed, and the destination must be a discovered save folder for the same title. Files are downloaded and checked before any original local save is renamed; originals are preserved as sibling backups. No automatic download or conflict resolution.
+
+### One cloud copy per game (native WebDAV)
+
+Automatic native WebDAV backups now retain one completed snapshot per title/layout/profile/device. A successful new upload triggers WebDAV deletion of older revisions only in the matching scope; the idle scan also prunes previously accumulated revisions even if nothing changed. Old snapshots for other devices/profiles are untouched. Nextcloud's versioning and trash may still use storage.

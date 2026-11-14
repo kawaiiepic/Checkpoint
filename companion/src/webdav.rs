@@ -369,3 +369,61 @@ pub fn download_snapshot(cfg:&Config,reference:&str,staging:&Path) -> Result<usi
     }
     Ok(count)
 }
+
+
+/// Retain one completed remote snapshot for this exact game/profile/device.
+/// Never delete anything unless the snapshot being kept has a completion marker.
+pub fn keep_one_snapshot(cfg: &Config, device_folder: &str, preferred: Option<&str>) -> Result<usize,String> {
+    let client=client()?;
+    let base=root(cfg)?;
+    let folder:Vec<&str>=device_folder.split('/').collect();
+    if folder.len()!=5 || folder[0]!="switch2"
+        || !crate::discovery::valid_title_id(folder[1])
+        || !["account","device","legacy-account"].contains(&folder[2])
+        || folder.iter().any(|item|item.is_empty()||*item=="."||*item==".."
+            || item.contains('%')||item.contains('\\')) {
+        return Err("Invalid backup directory for retention".into());
+    }
+    let mut snapshots=folder.clone();
+    snapshots.push("snapshots");
+    let items=list_collection(&client,cfg,&base,&snapshots)?;
+    let mut candidates:Vec<String>=items.into_iter().filter(|item|item.is_dir)
+        .map(|item|item.name).collect();
+    candidates.sort();
+    if candidates.is_empty(){return Ok(0);}
+    let mut complete=Vec::new();
+    for name in &candidates {
+        let mut parts=snapshots.clone();
+        parts.push(name);
+        let entries=list_collection(&client,cfg,&base,&parts)?;
+        if entries.iter().any(|entry|entry.name==".checkpoint-complete" && !entry.is_dir) {
+            complete.push(name.clone());
+        }
+    }
+    let keep=match preferred {
+        Some(revision) => {
+            if !complete.iter().any(|item|item==revision) {
+                return Err("New snapshot is not complete; retaining all previous backups".into());
+            }
+            revision.to_owned()
+        }
+        None => match complete.last() {
+            Some(name)=>name.clone(),
+            None=>return Err("No completed snapshot found; refusing retention cleanup".into())
+        }
+    };
+    let mut removed=0;
+    for name in candidates {
+        if name==keep {continue;}
+        let mut parts=snapshots.clone();
+        parts.push(&name);
+        let url=target(&base,&parts,true)?;
+        let response=authorize(client.request(method(b"DELETE"),url),cfg)
+            .send().map_err(|e|format!("WebDAV cleanup: {e}"))?;
+        if !response.status().is_success() && response.status()!=StatusCode::NOT_FOUND {
+            return Err(error_status("remove older snapshot",response.status()));
+        }
+        removed+=1;
+    }
+    Ok(removed)
+}
