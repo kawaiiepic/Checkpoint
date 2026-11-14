@@ -287,10 +287,7 @@ pub fn run(adopt:Option<&str>)->Result<Summary,String>{
         if adopt.is_some()&&adopt!=Some(title.as_str()){continue;}
         match webdav::get_current(&cfg,title) {
             Ok(Some(current))=>{
-                let roots=if library.save_roots.is_empty(){
-                    discovery::candidate_roots(&[],&[])
-                }else{library.save_roots.clone()};
-                match installed::missing_account_directory(&roots,title)
+                match installed::missing_account_directory(&library,title)
                     .and_then(|path|{
                         install_missing(&cfg,&current,&path,title)?;
                         let key=format!("{}|{}|{}",cfg.destination,title,path.display());

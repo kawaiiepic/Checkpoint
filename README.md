@@ -132,3 +132,7 @@ For installed NUP titles with no save yet, Checkpoint checks the single cloud `c
 ### Sync while Eglantine's game list is open
 
 An open Eglantine window no longer automatically blocks synchronization. Checkpoint now checks game activity before every sync and before applying downloaded saves. A fresh menu-only emulator session is eligible to sync. A game passed on the command line, any detected boot event in the active emulator logs, or unreadable/oversized/unknown activity information blocks syncing conservatively. Because Eglantine's logs do not provide a universally reliable stop signal, **once a game has booted in a session, syncing may remain blocked until Eglantine exits**. This avoids overwriting an active game's save. Decky uses the `game_running` status flag instead of assuming an open emulator window means an active game.
+
+### Automatic Eglantine profile resolution
+
+For installed NUPs with no local save, Checkpoint reads `[System] current_user` from qt-config.ini and maps it to the actual account ID using `nand/system/save/8000000000000010/su/avators/profiles.dat`, cross-checking `su/registry.dat`. The selected UUID determines the missing account save destination without needing a dummy save. If the profile records are missing or disagree, Checkpoint refuses to guess. Profile records are never uploaded.

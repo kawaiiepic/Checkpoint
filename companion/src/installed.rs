@@ -6,6 +6,7 @@ use std::{collections::{BTreeMap,BTreeSet},env,fs,path::{Path,PathBuf}};
 pub struct Library {
     pub titles:BTreeSet<String>,
     pub save_roots:Vec<PathBuf>,
+    pub current_user: Option<usize>,
 }
 fn home()->PathBuf {PathBuf::from(env::var_os("HOME").unwrap_or_default())}
 fn config_candidates()->Vec<PathBuf>{
@@ -26,6 +27,7 @@ fn settings(path:&Path)->Result<Library,String>{
     let mut directories:BTreeMap<usize,String>=BTreeMap::new();
     let mut deep:BTreeMap<usize,bool>=BTreeMap::new();
     let mut nand=None;
+    let mut current_user=None;
     for line in content.lines() {
         let line=line.trim();
         if line.starts_with('[')&&line.ends_with(']'){section=&line[1..line.len()-1];continue;}
@@ -44,6 +46,8 @@ fn settings(path:&Path)->Result<Library,String>{
             }
         }else if section=="Data%20Storage" && key=="nand_directory"{
             nand=Some(PathBuf::from(value(val)));
+        }else if section=="System" && key=="current_user"{
+            current_user=value(val).parse::<usize>().ok().filter(|i|*i<8);
         }
     }
     let mut titles=BTreeSet::new();
@@ -78,12 +82,11 @@ fn settings(path:&Path)->Result<Library,String>{
     }
     let mut save_roots=Vec::new();
     if let Some(nand)=nand {
-        let save=nand.join("user/save");
-        if let Ok(root)=fs::canonicalize(save) {
-            if root.is_dir(){save_roots.push(root);}
+        if let Ok(root)=fs::canonicalize(nand) {
+            if root.is_dir(){save_roots.push(root.join("user/save"));}
         }
     }
-    Ok(Library{titles,save_roots})
+    Ok(Library{titles,save_roots,current_user})
 }
 pub fn load()->Result<Library,String>{
     for config in config_candidates(){
@@ -92,32 +95,50 @@ pub fn load()->Result<Library,String>{
     Err("Cannot locate Eglantine qt-config.ini; refusing sync without installed NUP allowlist. Set CHECKPOINT_QT_CONFIG if necessary".into())
 }
 
-/// Find a deterministic destination for an account save that has never existed.
-/// Never infer a profile from a default index or use a path that may belong to a different user.
-pub fn missing_account_directory(roots:&[PathBuf],id:&str)->Result<PathBuf,String>{
-    let mut candidates=BTreeSet::new();
+/// Map the configured user index to its account save-directory ID.
+fn selected_account_id(nand:&Path,index:usize)->Result<String,String>{
+    if index>=8{return Err("Selected user index outside 0..8".into());}
+    let base=nand.join("system/save/8000000000000010/su");
+    let profiles=fs::read(base.join("avators/profiles.dat"))
+        .map_err(|e|format!("Read profiles.dat: {e}"))?;
+    let registry=fs::read(base.join("registry.dat"))
+        .map_err(|e|format!("Read registry.dat: {e}"))?;
+    const P:[u8;8]=[0xA4,0x87,0x1A,0xCD,0x01,0x60,0x61,0x50];
+    const R:[u8;8]=[0x29,0x01,0x85,0xBC,0x01,0x60,0x11,0x60];
+    if profiles.get(..8)!=Some(P.as_slice()) || registry.get(..8)!=Some(R.as_slice()) {
+        return Err("Unknown Eglantine user profile format".into());
+    }
+    let offset=0x10+index*0xC8;
+    let selected=profiles.get(offset..offset+16).ok_or("Truncated profiles.dat")?;
+    let registered=registry.get(0x10+index*16..0x20+index*16).ok_or("Truncated registry.dat")?;
+    if selected!=registered || selected.iter().all(|b|*b==0) {
+        return Err("Selected profile and account registry disagree or user is empty".into());
+    }
+    let high=u64::from_le_bytes(selected[8..16].try_into().map_err(|_|"Bad UUID high half")?);
+    let low=u64::from_le_bytes(selected[..8].try_into().map_err(|_|"Bad UUID low half")?);
+    Ok(format!("{high:016X}{low:016X}"))
+}
+pub fn missing_account_directory(library:&Library,id:&str)->Result<PathBuf,String>{
+    if !discovery::valid_title_id(id){return Err("Invalid title ID".into());}
+    let index=library.current_user.ok_or("Missing [System] current_user in qt-config.ini")?;
+    if library.save_roots.len()!=1 {
+        return Err("Exactly one configured Eglantine NAND root is required".into());
+    }
+    let root=&library.save_roots[0];
+    let nand=root.parent().and_then(Path::parent).ok_or("Invalid NAND root")?;
+    let id_key=selected_account_id(nand,index)?;
+    let account=root.join("account");
+    let profile=account.join(id_key);
     let program=u64::from_str_radix(id,16).map_err(|e|e.to_string())? & !0xff;
-    for root in roots {
-        let account=root.join("account");
-        if !fs::symlink_metadata(&account).is_ok_and(|m|m.is_dir() && !m.file_type().is_symlink()) {continue;}
-        if let Ok(profiles)=fs::read_dir(account){
-            for profile in profiles.flatten(){
-                let Ok(ty)=profile.file_type() else {continue};
-                if !ty.is_dir()||ty.is_symlink(){continue;}
-                let name=profile.file_name().to_string_lossy().into_owned();
-                // Profile directory names must resemble the emulator's UUID identifiers.
-                let normalized=name.replace('-',"");
-                if normalized.len()!=32 || !normalized.bytes().all(|b|b.is_ascii_hexdigit()){continue;}
-                candidates.insert(profile.path().join(format!("{program:016X}")).join("0"));
+    let game=profile.join(format!("{program:016X}"));
+    let destination=game.join("0");
+    for p in [root,&account,&profile,&game,&destination] {
+        if let Ok(meta)=fs::symlink_metadata(p) {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err("Unsafe save destination parent/symlink".into());
             }
         }
     }
-    if candidates.len()!=1 {
-        return Err(format!("Cannot safely create save: expected exactly one known account profile, found {}. Create a local save first",candidates.len()));
-    }
-    let candidate=candidates.into_iter().next().ok_or("No profile")?;
-    if candidate.exists() {
-        return Err("Missing-save destination already exists; refusing to overwrite it".into());
-    }
-    Ok(candidate)
+    if destination.exists(){return Err("Local save directory already exists".into());}
+    Ok(destination)
 }
