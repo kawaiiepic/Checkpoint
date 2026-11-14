@@ -33,3 +33,7 @@ For a directly launched `.nup`, Checkpoint reads and validates the NUP v1 TOC an
 ### Switch 2 game-name lookup
 
 The companion uses **only** the [Switchbrew Switch 2 Games table](https://switchbrew.org/wiki/Switch_2:_Title_list/Games), filtering IDs to 16 hex digits beginning with `0400`. It caches the scraped title-ID-to-name mapping in `~/.cache/checkpoint/switch2-titles.tsv` (or `$XDG_CACHE_HOME/checkpoint/switch2-titles.tsv`) and refreshes it when older than 7 days. `--refresh-titles` forces a refresh. If the website is unavailable, the existing cache is retained, and Eglantine's own game label remains the fallback. Online data is used for **display names only**, never save-write decisions. Switch 1 games are intentionally not looked up.
+
+### Shared backend and title-ID save discovery
+
+`--status-json` prints a single JSON snapshot for Decky. Both apps now use the same Rust process, log, and directory discovery. The only supported title-ID save layouts are those defined by Eglantine's own `savedata_factory.cpp`; there is no write/sync feature.

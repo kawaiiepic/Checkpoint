@@ -1,102 +1,28 @@
-"""Checkpoint Decky backend: read-only Eglantine save-change watcher."""
+"""Checkpoint Decky interface; all detection and save discovery run in Rust."""
 import asyncio
-import datetime
+import json
 import os
 from pathlib import Path
-import time
 
 import decky
 
-HOME = Path(decky.DECKY_USER_HOME)
-ROOT_CANDIDATES = [
-    HOME / ".local/share/eglantine/nand/user/save",
-    HOME / ".local/share/Eglantine/nand/user/save",
-    HOME / ".local/share/eglantine/user/nand/user/save",
+HERE = Path(__file__).resolve().parent
+BINARIES = [
+    HERE / "bin" / "checkpoint-companion",
+    HERE / "companion" / "target" / "release" / "checkpoint-companion",
+    Path("/usr/local/bin/checkpoint-companion"),
 ]
-SCAN_INTERVAL = 3.0
-SETTLE_SECONDS = 6.0
-MAX_FILES = 30000
-
-
-def _game_from_args(args):
-    for i, arg in enumerate(args):
-        value = arg.split("=", 1)[1] if arg.startswith("--game=") else None
-        if arg in ("--game", "-g") and i + 1 < len(args):
-            value = args[i + 1]
-        if value is None and arg.lower().endswith((".nsp", ".xci", ".nca", ".nro")):
-            value = arg
-        if value and value.lower().endswith((".nsp", ".xci", ".nca", ".nro")):
-            return Path(value).stem
-    return None
-
-
-def _read_processes():
-    games = []
-    try:
-        for proc in Path("/proc").iterdir():
-            if not proc.name.isdigit():
-                continue
-            try:
-                raw = (proc / "cmdline").read_bytes().split(b"\0")
-                args = [arg.decode("utf-8", "replace") for arg in raw if arg]
-                if not args:
-                    continue
-                executable = os.path.basename(args[0]).lower()
-                if not (executable.startswith("eglantine") or executable == "eden-cli"):
-                    continue
-                game = _game_from_args(args)
-                if game:
-                    games.append((int(proc.name), game))
-            except (OSError, ValueError):
-                continue
-    except OSError:
-        pass
-    return games
-
-
-def _roots():
-    candidates = list(ROOT_CANDIDATES)
-    candidates.extend(
-        Path(value).expanduser()
-        for value in os.environ.get("EGLANTINE_SAVE_DIRS", "").split(":")
-        if value.strip()
-    )
-    return list(dict.fromkeys(path.resolve() for path in candidates if path.is_dir()))
-
-
-def _snapshot(roots):
-    files = {}
-    for root in roots:
-        stack = [root]
-        while stack and len(files) < MAX_FILES:
-            directory = stack.pop()
-            try:
-                with os.scandir(directory) as entries:
-                    for entry in entries:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(Path(entry.path))
-                        elif entry.is_file(follow_symlinks=False):
-                            info = entry.stat(follow_symlinks=False)
-                            files[entry.path] = (info.st_size, info.st_mtime_ns)
-            except OSError:
-                continue
-    return files
-
+POLL_SECONDS = 5
 
 class Plugin:
     async def _main(self):
-        self._task = asyncio.create_task(self._watch())
-        self._status = {
-            "running": False,
-            "game": None,
-            "save_roots": [],
-            "last_update": None,
-            "last_game": None,
-            "watched_files": 0,
+        self.status = {
+            "running": False, "game": None, "title_id": None,
+            "save_roots": [], "saves": [], "watched_files": 0, "process_count": 0,
         }
-        decky.logger.info("Checkpoint watcher started")
+        self.error = None
+        self._task = asyncio.create_task(self._poll())
+        decky.logger.info("Checkpoint Rust status bridge started")
 
     async def _unload(self):
         self._task.cancel()
@@ -106,54 +32,52 @@ class Plugin:
             pass
 
     async def get_status(self):
-        return dict(self._status)
+        return {**self.status, "error": self.error}
 
-    async def _watch(self):
-        previous_files = None
-        previous_session = None
-        pending = None
-        try:
-            while True:
-                processes = _read_processes()
-                session = processes[0] if len(processes) == 1 else None
-                roots = _roots()
-                files = await asyncio.to_thread(_snapshot, roots)
-                self._status.update(
-                    running=bool(processes),
-                    game=session[1] if session else ("Multiple games" if processes else None),
-                    save_roots=[str(root) for root in roots],
-                    watched_files=len(files),
+    async def _poll(self):
+        last_session = None
+        last_signatures = None
+        while True:
+            try:
+                binary = next((path for path in BINARIES if path.is_file() and os.access(path, os.X_OK)), None)
+                if binary is None:
+                    raise FileNotFoundError("Build the Rust companion and copy it to bin/checkpoint-companion")
+                process = await asyncio.create_subprocess_exec(
+                    str(binary), "--status-json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                if session != previous_session:
-                    # New session: ignore saves that were already present.
-                    previous_files = files
-                    previous_session = session
-                    pending = None
-                elif session is not None and previous_files is not None:
-                    changed = [
-                        path for path, metadata in files.items()
-                        if previous_files.get(path) != metadata
-                    ]
-                    if changed:
-                        # Debounce until writes stop.
-                        existing_count = pending[1] if pending else 0
-                        pending = (time.monotonic(), max(len(changed), existing_count))
-                    elif pending and time.monotonic() - pending[0] >= SETTLE_SECONDS:
-                        timestamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-                        self._status["last_update"] = timestamp
-                        self._status["last_game"] = session[1]
-                        await decky.emit("save_updated", {
-                            "game": session[1],
-                            "changed_count": pending[1],
-                            "when": timestamp,
+                try:
+                    out, err = await asyncio.wait_for(process.communicate(), timeout=12)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.communicate()
+                    raise RuntimeError("Rust status scan timed out")
+                if process.returncode:
+                    raise RuntimeError(err.decode(errors="replace").strip() or f"Rust exited {process.returncode}")
+                current = json.loads(out)
+                session = (current.get("running"), current.get("title_id"))
+                signatures = {save["path"]: save["signature"] for save in current.get("saves", [])}
+                if session != last_session:
+                    if current.get("running") and current.get("title_id"):
+                        await decky.emit("game_detected", {
+                            "game": current.get("game"), "title_id": current.get("title_id")
                         })
-                        pending = None
-                    previous_files = files
-                else:
-                    previous_files = files
-                    pending = None
-                await asyncio.sleep(SCAN_INTERVAL)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            decky.logger.exception("Checkpoint watcher failed")
+                    last_signatures = signatures
+                elif last_signatures is not None and signatures != last_signatures and current.get("title_id"):
+                    await decky.emit("save_updated", {
+                        "game": current.get("game"), "title_id": current.get("title_id"),
+                        "changed_count": sum(last_signatures.get(path) != value for path, value in signatures.items())
+                    })
+                    last_signatures = signatures
+                self.status = current
+                self.error = None
+                last_session = session
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.error = str(exc)
+                decky.logger.warning("Checkpoint Rust bridge: %s", exc)
+                last_session = None
+                last_signatures = None
+            await asyncio.sleep(POLL_SECONDS)

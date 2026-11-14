@@ -7,11 +7,15 @@ type Status = {
   running: boolean;
   game: string | null;
   save_roots: string[];
-  last_update: string | null;
-  last_game: string | null;
+  last_update?: string | null;
+  last_game?: string | null;
   watched_files: number;
+  title_id?: string | null;
+  process_count?: number;
+  saves?: { path: string; profile: string; layout: string; file_count: number }[];
+  error?: string | null;
 };
-type Change = { game: string; when: string; changed_count: number };
+type Change = { game: string; title_id?: string; changed_count: number };
 const getStatus = callable<[], Status>('get_status');
 
 function Content() {
@@ -33,6 +37,8 @@ function Content() {
       <PanelSectionRow>
         <div>{status ? `Monitoring ${status.watched_files} save files` : 'Checking...'}</div>
       </PanelSectionRow>
+      <PanelSectionRow><div>{status?.title_id ? `Title ID: ${status.title_id}` : 'Title ID not detected'}</div></PanelSectionRow>
+      <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path}`).join(' | ') : 'No matching save directory found'}</div></PanelSectionRow>
       <PanelSectionRow>
         <div>{status?.last_update ? `Last local update: ${status.last_game} (${status.last_update})` : 'No save updates detected yet'}</div>
       </PanelSectionRow>
@@ -44,7 +50,7 @@ function Content() {
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={() => void refresh()}>Refresh detection</ButtonItem>
       </PanelSectionRow>
-      {error && <PanelSectionRow><div>{error}</div></PanelSectionRow>}
+      {(error || status?.error) && <PanelSectionRow><div>{error || status?.error}</div></PanelSectionRow>}
     </PanelSection>
     <PanelSection title="Prototype limitations">
       <PanelSectionRow>
@@ -62,11 +68,14 @@ export default definePlugin(() => {
       icon: <FaCloud />,
     });
   });
+  const gameListener = addEventListener<[{ game: string; title_id: string }]>("game_detected", (event) => {
+    toaster.toast({title: "Eglantine game detected", body: `${event.game} [${event.title_id}]`, icon: <FaGamepad />});
+  });
   return {
     name: 'Checkpoint',
     titleView: <div className={staticClasses.Title}>Checkpoint</div>,
     content: <Content />,
     icon: <FaGamepad />,
-    onDismount() { removeEventListener('save_updated', listener); },
+    onDismount() { removeEventListener('save_updated', listener); removeEventListener("game_detected", gameListener); },
   };
 });

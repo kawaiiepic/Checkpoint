@@ -1,3 +1,5 @@
+mod discovery;
+mod status;
 mod titles;
 mod nup;
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
@@ -158,7 +160,7 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -169,7 +171,8 @@ fn main(){
             "--idle-seconds"=>idle=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--notify"=>desktop=true,"--once"=>once=true,
             "--refresh-titles"=>refresh_titles=true,
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--notify] [--once]");return},
+            "--status-json"=>status_json=true,
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -182,6 +185,11 @@ fn main(){
     }
     let home=PathBuf::from(env::var_os("HOME").expect("HOME not set"));
     let logs=log_override.map(|p|vec![p]).unwrap_or_else(||log_candidates(&home));
+    if status_json {
+        let snapshot=status::snapshot(&roots, log_override.as_ref());
+        println!("{}",serde_json::to_string(&snapshot).expect("serialize snapshot"));
+        return;
+    }
     let title_names=titles::load_or_refresh(refresh_titles);
     println!("Checkpoint companion · read-only; no uploads or downloads");
     for p in &roots{println!("  watching {}",p.display())}
@@ -242,6 +250,10 @@ fn main(){
         }
         }
         println!("[Checkpoint] {} Eglantine process(es), {} save files",games.len(),current.len());
+        if let Some(boot) = &last_boot {
+            let found=discovery::discover(&discovery::candidate_roots(&roots,&games.iter().map(|(pid,_)|*pid).collect::<Vec<_>>()), &boot.title_id);
+            for save in found {println!("[Checkpoint] Save: {} ({}, profile {}, {} files)",save.path,save.layout,save.profile,save.file_count);}
+        }
         old_games=Some(games.clone());old_files=Some(current);
         if let Some(path)=&remote{
             match Command::new("rclone").args(["lsf","--recursive","--files-only","--format","pst",path]).output(){

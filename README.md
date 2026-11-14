@@ -1,34 +1,49 @@
 # Checkpoint
 
-A read-only Decky Loader prototype for detecting locally updated Eglantine game saves on Steam Deck.
+A read-only Steam Deck and Linux Eglantine save watcher. **The Rust companion is the single detection engine**; Decky runs it in `--status-json` mode and renders notifications/status. No separate Python save scanner.
 
-## Current scope
-
-- Detects running Eglantine / `eden-cli` processes launched with a ROM argument.
-- Watches selected Eglantine save folders for file metadata changes.
-- Displays a Decky toast when a local save file changes and settles.
-- Shows detection status in Decky's Quick Access Menu.
-- Does **not** sync, upload, download, or modify saves. It does not currently add a native Steam library status row.
-
-## Development
-
-Requires a Steam Deck with Decky Loader, Node.js and pnpm for frontend builds.
+## Rust (Void Linux or Steam Deck)
 
 ```sh
+cd companion
+cargo build --release
+./target/release/checkpoint-companion --status-json
+./target/release/checkpoint-companion
+```
+
+The companion detects Eglantine AppImage processes and reads recently modified Eglantine boot logs for Switch 2 title IDs. It discovers save locations using Eglantine's verified legacy and current save layouts (see below). Nothing is uploaded, downloaded or modified.
+
+## Decky
+
+Build the Rust binary for the Steam Deck (Linux x86_64), place it at `bin/checkpoint-companion` in the plugin directory, then build the frontend:
+
+```sh
+mkdir -p bin
+cp companion/target/release/checkpoint-companion bin/checkpoint-companion
 pnpm install
 pnpm build
 ```
 
-Install the built plugin directory using Decky Loader's developer plugin installation workflow. The `dist/` output is required for the frontend. This source release has not been validated on a physical Steam Deck.
+Install the built plugin folder using Decky's developer plugin workflow. The Python backend starts the Rust binary to request JSON status every five seconds. The plugin requires `dist/`, `bin/checkpoint-companion`, `main.py` and `plugin.json`. This has not been tested on a physical Deck.
 
-## Eglantine save directories
+## Save discovery
 
-The prototype checks several common Eglantine data directories beneath the Deck user's home directory. If yours differs, the backend supports a colon-separated `EGLANTINE_SAVE_DIRS` environment variable. This environment variable must be passed to the Decky backend, not just an interactive shell.
+Based on Eglantine's `src/core/file_sys/savedata_factory.cpp`, Checkpoint checks these **existing directories only**, for a booted Switch 2 title ID:
 
-Eglantine must be launched with a ROM path (`eglantine /path/to/game.xci` or `--game /path/to/game.xci`) for reliable game-name recognition in this prototype. Starting a game from Eglantine's own library after launching its GUI is not yet supported.
+- `nand/user/save/account/<user-UUID>/<title-id-and-~0xFF>/0` (new account layout)
+- `nand/user/save/device/<title-id-and-~0xFF>/0` (new device layout)
+- `nand/user/save/0000000000000000/<32-hex-user-id>/<full-title-id>` (legacy layout)
 
-The watcher tracks file metadata across scanned roots, not precise per-title save ownership. A notification is attributed to the active ROM only when exactly one recognizable Eglantine game process exists. Verify your actual save path in the plugin status page.
+Eglantine's data directory normally lives at `$XDG_DATA_HOME/eglantine` (or `~/.local/share/eglantine`), and portable installations can use a `user` directory beside the AppImage or in its current working directory. You may supply `--save-dir /path/to/nand/user/save` when using an unusual install.
 
-## Safety
+Only nonempty save directories are reported. Discovery does not infer save ownership from file modification times and does not write files. Multiple profiles or storage layouts are reported separately. Title ID matching is safe for discovery, but future syncing must use content hashes, per-profile identity matching, backups, and conflicts.
 
-Read-only: no cloud integration or save writes. Don't interpret a local save notification as a newer remote/cloud save.
+If Eglantine's log is not in a default location, use `--log-file /path/to/eden_log.txt` with the CLI. The Decky bridge currently uses default log locations only.
+
+## Limitations
+
+- Save transfers are **not implemented**.
+- No automatic account-profile equivalence between different machines.
+- Unrecognized Eglantine sessions may show no title ID or save match.
+- Steam library inline status injection is not yet implemented; notifications appear through Decky's toaster.
+- Source hasn't been validated with a full Rust build in this environment.
