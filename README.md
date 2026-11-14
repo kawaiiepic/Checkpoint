@@ -136,3 +136,5 @@ An open Eglantine window no longer automatically blocks synchronization. Checkpo
 ### Automatic Eglantine profile resolution
 
 For installed NUPs with no local save, Checkpoint reads `[System] current_user` from qt-config.ini and maps it to the actual account ID using `nand/system/save/8000000000000010/su/avators/profiles.dat`, cross-checking `su/registry.dat`. The selected UUID determines the missing account save destination without needing a dummy save. If the profile records are missing or disagree, Checkpoint refuses to guess. Profile records are never uploaded.
+
+**Profile resolver correction:** Eglantine/Eden stores account IDs solely in `profiles.dat` (0x650 bytes: 0x10-byte header followed by eight 0xC8-byte records), not a sibling `registry.dat`. Each record contains two copies of the UUID. Checkpoint verifies the copies match, skips empty slots just like Eglantine's profile manager, and uses the selected `current_user` index in the compacted list. No other registry file is needed.

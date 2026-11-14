@@ -98,22 +98,32 @@ pub fn load()->Result<Library,String>{
 /// Map the configured user index to its account save-directory ID.
 fn selected_account_id(nand:&Path,index:usize)->Result<String,String>{
     if index>=8{return Err("Selected user index outside 0..8".into());}
-    let base=nand.join("system/save/8000000000000010/su");
-    let profiles=fs::read(base.join("avators/profiles.dat"))
-        .map_err(|e|format!("Read profiles.dat: {e}"))?;
-    let registry=fs::read(base.join("registry.dat"))
-        .map_err(|e|format!("Read registry.dat: {e}"))?;
-    const P:[u8;8]=[0xA4,0x87,0x1A,0xCD,0x01,0x60,0x61,0x50];
-    const R:[u8;8]=[0x29,0x01,0x85,0xBC,0x01,0x60,0x11,0x60];
-    if profiles.get(..8)!=Some(P.as_slice()) || registry.get(..8)!=Some(R.as_slice()) {
-        return Err("Unknown Eglantine user profile format".into());
+    let path=nand.join("system/save/8000000000000010/su/avators/profiles.dat");
+    let data=fs::read(&path).map_err(|e|format!("Read {}: {e}",path.display()))?;
+    // Eglantine/Eden ProfileDataRaw: 0x10 reserved bytes and eight UserRaw
+    // records of 0xC8 bytes. Each record begins with two identical UUIDs.
+    const EXPECTED_SIZE:usize=0x650;
+    const HEADER:usize=0x10;
+    const RECORD:usize=0xC8;
+    if data.len()!=EXPECTED_SIZE {
+        return Err(format!("Unsupported profiles.dat size: expected {EXPECTED_SIZE}, got {}",data.len()));
     }
-    let offset=0x10+index*0xC8;
-    let selected=profiles.get(offset..offset+16).ok_or("Truncated profiles.dat")?;
-    let registered=registry.get(0x10+index*16..0x20+index*16).ok_or("Truncated registry.dat")?;
-    if selected!=registered || selected.iter().all(|b|*b==0) {
-        return Err("Selected profile and account registry disagree or user is empty".into());
+    let mut ids=Vec::new();
+    for n in 0..8 {
+        let start=HEADER+n*RECORD;
+        let a=&data[start..start+16];
+        let b=&data[start+16..start+32];
+        if a!=b {return Err(format!("profiles.dat user slot {n} has mismatched UUID copies"));}
+        if a.iter().all(|byte|*byte==0){continue;}
+        ids.push(a.to_vec());
     }
+    // ProfileManager::ParseUserSaveFile skips empty slots and compacts users.
+    let selected=ids.get(index).ok_or("Selected Eglantine user does not exist in profiles.dat")?;
+    if ids.iter().filter(|v|*v==selected).count()!=1 {
+        return Err("Duplicate UUID in profiles.dat; refusing ambiguous account".into());
+    }
+    // The save-directory name is the UUID interpreted as two little-endian
+    // u64 halves, printed high then low (ProfileManager::FindExistingProfileStrings).
     let high=u64::from_le_bytes(selected[8..16].try_into().map_err(|_|"Bad UUID high half")?);
     let low=u64::from_le_bytes(selected[..8].try_into().map_err(|_|"Bad UUID low half")?);
     Ok(format!("{high:016X}{low:016X}"))
