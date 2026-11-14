@@ -66,7 +66,7 @@ function Content() {
     </PanelSection>
     <PanelSection title="Prototype limitations">
       <PanelSectionRow>
-        <div>Automatic idle backups when a global rsync/rclone destination is configured. Cloud restore and conflicts are not implemented yet.</div>
+        <div>Automatic idle backups when a global WebDAV, rsync, or rclone destination is configured. Cloud restore and conflicts are not implemented yet.</div>
       </PanelSectionRow>
     </PanelSection>
   </>;

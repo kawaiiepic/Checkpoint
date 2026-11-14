@@ -161,7 +161,7 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;let mut configure_webdav:Option<(String,String)>=None;let mut test_webdav=false;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -174,6 +174,18 @@ fn main(){
             "--refresh-titles"=>refresh_titles=true,
             "--status-json"=>status_json=true,
             "--backup-once"=>sync_once=true,
+            "--test-webdav"=>test_webdav=true,
+            "--configure-webdav"=>{
+                let url=args.next().filter(|s|!s.starts_with("--"));
+                let user=args.next().filter(|s|!s.starts_with("--"));
+                match (url,user) {
+                    (Some(url),Some(user))=>configure_webdav=Some((url,user)),
+                    _=>{
+                        eprintln!("Usage: checkpoint-companion --configure-webdav 'https://cloud.example/remote.php/dav/files/USER/Checkpoint' USER");
+                        std::process::exit(2);
+                    }
+                }
+            },
             "--configure-sync"=>{
                 let backend = args.next().filter(|v| !v.starts_with("--"));
                 let destination = args.next().filter(|v| !v.starts_with("--"));
@@ -188,9 +200,28 @@ fn main(){
                     }
                 }
             },
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--backup-once] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--backup-once] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
+    }
+    if let Some((url,user))=configure_webdav {
+        let password=match rpassword::prompt_password("Nextcloud app password: ") {
+            Ok(password)=>password,
+            Err(error)=>{eprintln!("Cannot read app password: {error}");std::process::exit(2)}
+        };
+        if let Err(error)=sync::configure_webdav(&url,&user,&password) {
+            eprintln!("WebDAV configuration failed: {error}");
+            std::process::exit(2);
+        }
+        println!("[Checkpoint] Native WebDAV connected; global destination saved");
+        return;
+    }
+    if test_webdav {
+        match sync::test_webdav() {
+            Ok(())=>println!("[Checkpoint] WebDAV connection OK"),
+            Err(error)=>{eprintln!("[Checkpoint] WebDAV test failed: {error}");std::process::exit(1)}
+        }
+        return;
     }
     if let Some((backend,destination))=configure_sync {
         if let Err(e)=sync::configure(&backend,&destination) {eprintln!("Config error: {e}");std::process::exit(2)}
@@ -220,7 +251,7 @@ fn main(){
     let title_names=titles::load_or_refresh(refresh_titles);
     println!("Checkpoint companion · save monitoring and automatic idle backups (restore disabled)");
     match sync::backup_status() {
-        Ok((false,_)) => eprintln!("[Checkpoint] WARNING: No backup destination configured. Use --configure-sync rclone REMOTE:Checkpoint or --configure-sync rsync HOST:/path/Checkpoint"),
+        Ok((false,_)) => eprintln!("[Checkpoint] WARNING: No backup destination configured. Use --configure-webdav HTTPS_URL USER or --configure-sync rclone/rsync DEST"),
         Ok((true,total)) => println!("[Checkpoint] Previously backed up games: {total}"),
         Err(error) => eprintln!("[Checkpoint] Backup config error: {error}"),
     }

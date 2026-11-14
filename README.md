@@ -65,3 +65,18 @@ checkpoint-companion --configure-sync rsync 'myserver:/backups/Checkpoint'
 ```
 
 One global file is stored at `~/.config/checkpoint/config.json` (or `$CHECKPOINT_CONFIG`). `--backup-once` invokes a safe idle-only backup. Normal terminal monitoring attempts backups while Eglantine is stopped; Decky invokes the same Rust command about every 30 seconds while idle. Source saves are never deleted, and remote snapshot paths are never reused intentionally. This feature **backs up** saves; it does NOT yet download/restore to another device, merge concurrent changes or resolve profile identities between devices. Remote storage grows with snapshots until retention support is introduced. Requires `rclone` or `rsync` installed and authenticated. Check available storage before using it. Avoid running concurrent Checkpoint instances with the same global configuration.
+
+## Native Nextcloud WebDAV (no rclone or rsync)
+
+Run the following in the Rust companion directory:
+
+```sh
+./target/release/checkpoint-companion --configure-webdav \
+  'https://cloud.blossomvale.dev/remote.php/dav/files/USERNAME/Checkpoint' USERNAME
+```
+
+Use the exact WebDAV URL from Nextcloud **Files settings**, adding the `Checkpoint` directory to the end. Checkpoint prompts privately for a dedicated Nextcloud **app password** (the password won't be an argument in shell history). It verifies access before saving one global configuration file at `~/.config/checkpoint/config.json` using owner-only file permissions (`0600` on Linux). **The app password is stored in plaintext in this protected local file**. Secure access to the host, account, and any backups of the configuration file.
+
+Check connectivity: `./target/release/checkpoint-companion --test-webdav`. Run `--backup-once` with Eglantine closed to upload discovered Switch 2 saves directly over HTTPS. The backend creates directories using `MKCOL`, uploads files using `PUT` with overwrite protection, and writes a `.checkpoint-complete` marker only after a snapshot's files upload successfully. Traefik, Nextcloud, and intermediaries must accept WebDAV methods and sufficient request body sizes.
+
+There is still **one global destination**, no per-game configuration, and **no automatic restore or conflict resolution**. Existing rclone and rsync backends remain supported.

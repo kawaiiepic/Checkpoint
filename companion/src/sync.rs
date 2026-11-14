@@ -1,3 +1,4 @@
+mod webdav;
 //! Global-config, automatic read-only-source backups (NOT two-way synchronization).
 //! Cloud restore deliberately remains disabled pending safe merge/conflict logic.
 use crate::discovery;
@@ -9,7 +10,14 @@ use std::{
 };
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Config { pub backend: String, pub destination: String }
+pub struct Config {
+    pub backend: String,
+    pub destination: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub password: Option<String>,
+}
 #[derive(Default, Serialize, Deserialize)]
 struct State {
     uploads: BTreeMap<String, String>,
@@ -28,13 +36,20 @@ fn state_path() -> PathBuf {
         .unwrap_or_else(|| home().join(".local/state")).join("checkpoint/uploaded.json")
 }
 fn validate(config: &Config) -> Result<(), String> {
-    if !["rclone", "rsync"].contains(&config.backend.as_str())
+    if !["rclone", "rsync", "webdav"].contains(&config.backend.as_str())
         || config.destination.is_empty() || config.destination.starts_with('-')
         || config.destination.contains('\n') || config.destination.contains('\r') {
-        return Err("Expected backend rclone/rsync and a nonempty destination".into());
+        return Err("Expected backend webdav/rclone/rsync and a nonempty destination".into());
     }
     if config.backend == "rsync" && config.destination.contains("://") {
         return Err("rsync destination must be a local path or SSH-style host:path".into());
+    }
+    if config.backend == "webdav" {
+        webdav::validate_url(&config.destination)?;
+        if config.username.as_deref().is_none_or(str::is_empty)
+            || config.password.as_deref().is_none_or(str::is_empty) {
+            return Err("WebDAV requires a username and app password".into());
+        }
     }
     Ok(())
 }
@@ -43,13 +58,46 @@ fn save_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     fs::create_dir_all(parent).map_err(|e|e.to_string())?;
     let bytes = serde_json::to_vec_pretty(value).map_err(|e|e.to_string())?;
     let temp = path.with_extension("tmp");
-    fs::write(&temp, bytes).map_err(|e|e.to_string())?;
+    // Secrets may be stored in the config file; enforce owner-only permissions.
+    use std::io::Write as _;
+    use std::fs::OpenOptions;
+    let mut options=OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output=options.open(&temp).map_err(|e|e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        output.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e|e.to_string())?;
+    }
+    output.write_all(&bytes).map_err(|e|e.to_string())?;
+    output.sync_all().map_err(|e|e.to_string())?;
+    drop(output);
     fs::rename(temp, path).map_err(|e|e.to_string())
 }
 pub fn configure(backend: &str, destination: &str) -> Result<(), String> {
-    let cfg = Config {backend: backend.into(),destination: destination.into()};
+    let cfg = Config {backend: backend.into(),destination: destination.into(),username: None,password: None};
     validate(&cfg)?;
     save_atomic(&config_path(), &cfg)
+}
+pub fn configure_webdav(destination: &str, username: &str, password: &str) -> Result<(),String> {
+    let cfg = Config {
+        backend: "webdav".into(), destination: destination.into(),
+        username: Some(username.into()),password: Some(password.into())
+    };
+    validate(&cfg)?;
+    // Prevent silently storing credentials for an unreachable endpoint.
+    webdav::test(&cfg)?;
+    save_atomic(&config_path(),&cfg)
+}
+pub fn test_webdav() -> Result<(),String> {
+    let cfg=load()?.ok_or("No backup destination configured")?;
+    if cfg.backend != "webdav" {return Err("Configured backend is not native WebDAV".into());}
+    webdav::test(&cfg)
 }
 pub fn load() -> Result<Option<Config>, String> {
     let path = config_path();
@@ -117,6 +165,7 @@ fn part_name(name: &str) -> String {
     name.chars().filter(|c|c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(80).collect()
 }
 fn upload(cfg: &Config, source: &Path, target_suffix: &str) -> Result<(), String> {
+    if cfg.backend == "webdav" { return webdav::upload(cfg,source,target_suffix); }
     let target = format!("{}/{}",cfg.destination.trim_end_matches('/'),target_suffix);
     let (program, arguments): (&str, Vec<String>)=if cfg.backend=="rclone" {
         ("rclone",vec!["copy".into(),"--ignore-existing".into(),"--".into(),
@@ -146,7 +195,7 @@ pub fn backup_status() -> Result<(bool, usize), String> {
 pub fn backup_idle() -> Result<(usize,usize,usize), String> {
     let Some(cfg) = load()? else {
         return Err(format!(
-            "No backup destination configured (missing {}). Usage: --configure-sync rclone REMOTE:Checkpoint or --configure-sync rsync HOST:/path/Checkpoint",
+            "No backup destination configured (missing {}). Usage: --configure-webdav HTTPS_URL USER or --configure-sync rclone REMOTE:Checkpoint or --configure-sync rsync HOST:/path/Checkpoint",
             config_path().display()
         ));
     };
@@ -197,8 +246,8 @@ pub fn backup_idle() -> Result<(usize,usize,usize), String> {
 mod tests {
     use super::*;
     #[test] fn global_config_validation() {
-        assert!(validate(&Config{backend:"rclone".into(),destination:"mywebdav:Checkpoint".into()}).is_ok());
-        assert!(validate(&Config{backend:"rsync".into(),destination:"server:/backups/Checkpoint".into()}).is_ok());
-        assert!(validate(&Config{backend:"rsync".into(),destination:"-bad".into()}).is_err());
+        assert!(validate(&Config{backend:"rclone".into(),destination:"mywebdav:Checkpoint".into(),username:None,password:None}).is_ok());
+        assert!(validate(&Config{backend:"rsync".into(),destination:"server:/backups/Checkpoint".into(),username:None,password:None}).is_ok());
+        assert!(validate(&Config{backend:"rsync".into(),destination:"-bad".into(),username:None,password:None}).is_err());
     }
 }
