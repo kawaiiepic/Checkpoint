@@ -57,6 +57,16 @@ fn process_games() -> Vec<(u32,Option<String>)> {
     }
     games.sort_by_key(|g|g.0);games
 }
+fn session_label(games: &[(u32, Option<String>)]) -> String {
+    let mut titles: Vec<&str> = games.iter().filter_map(|(_, name)| name.as_deref()).collect();
+    titles.sort_unstable();
+    titles.dedup();
+    match titles.as_slice() {
+        [] => "game unknown (emulator active)".to_owned(),
+        [title] => (*title).to_owned(),
+        _ => "multiple distinct ROM arguments detected".to_owned(),
+    }
+}
 fn files(roots:&[PathBuf])->Files{
     let mut found=Files::new();
     for root in roots{
@@ -117,15 +127,14 @@ fn main(){
         let session_changed=old_games.as_ref().map_or(true,|old|*old!=games);
         if session_changed{
             if games.is_empty(){if old_games.as_ref().is_some_and(|x|!x.is_empty()){notice("Eglantine exited",desktop)}}
-            else{let game=if games.len()==1{games[0].1.as_deref().unwrap_or("unknown ROM")}else{"multiple games"};
-                notice(&format!("Eglantine detected: {game}"),desktop)}
+            else{notice(&format!("Eglantine detected: {}", session_label(&games)),desktop)}
             pending=None;
         }else if let Some(old)=&old_files{
             let n=changed(old,&current);
             if n>0{pending=Some((Instant::now(),pending.map_or(n,|(_,v)|n.max(v))))}
             else if let Some((since,count))=pending{
                 if since.elapsed()>=Duration::from_secs(6){
-                    let game=if games.len()==1{games[0].1.as_deref().unwrap_or("unknown ROM")}else{"unknown game"};
+                    let game=session_label(&games);
                     notice(&format!("Local save updated ({count} changed files; {game}). No sync performed."),desktop);
                     pending=None
                 }
@@ -153,5 +162,10 @@ fn main(){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn appimage_processes_are_not_games(){
+        assert_eq!(session_label(&[(1,None),(2,None)]), "game unknown (emulator active)");
+        assert_eq!(session_label(&[(1,None),(2,Some("Example".into()))]), "Example");
+        assert_eq!(session_label(&[(1,Some("Example".into())),(2,Some("Example".into()))]), "Example");
+    }
     #[test]fn change_count(){let mut a=Files::new();a.insert(PathBuf::from("save"),(2,1));let mut b=a.clone();assert_eq!(changed(&a,&b),0);b.insert(PathBuf::from("next"),(2,1));assert_eq!(changed(&a,&b),1);}
 }
