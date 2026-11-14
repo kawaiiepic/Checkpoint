@@ -109,7 +109,7 @@ pub fn load() -> Result<Option<Config>, String> {
     validate(&cfg)?;
     Ok(Some(cfg))
 }
-fn entries(roots: &[PathBuf]) -> Vec<(String, discovery::SaveLocation)> {
+pub(crate) fn entries(roots: &[PathBuf]) -> Vec<(String, discovery::SaveLocation)> {
     let mut ids = BTreeSet::new();
     for root in roots {
         if let Ok(profiles) = fs::read_dir(root.join("account")) {
@@ -152,6 +152,9 @@ fn entries(roots: &[PathBuf]) -> Vec<(String, discovery::SaveLocation)> {
     }
     saves
 }
+pub(crate) fn local_entries()->Vec<(String,discovery::SaveLocation)> {
+    entries(&discovery::candidate_roots(&[],&[]))
+}
 fn device_id() -> String {
     // Namespaces are intentionally per installation to avoid collision between devices.
     // Stable Linux machine-id is hashed so it isn't exposed verbatim remotely.
@@ -188,7 +191,9 @@ pub fn backup_status() -> Result<(bool, usize), String> {
     let state = fs::read(state_path()).ok()
         .and_then(|bytes|serde_json::from_slice::<State>(&bytes).ok())
         .unwrap_or_default();
-    let count = state.backed_up_titles.get(&destination_key(&cfg)).map_or(0,BTreeSet::len);
+    let count = if cfg.backend=="webdav" {crate::cross_sync::count()} else {
+        state.backed_up_titles.get(&destination_key(&cfg)).map_or(0,BTreeSet::len)
+    };
     Ok((true,count))
 }
 pub fn backup_idle() -> Result<(usize,usize,usize), String> {
@@ -198,6 +203,12 @@ pub fn backup_idle() -> Result<(usize,usize,usize), String> {
             config_path().display()
         ));
     };
+    if cfg.backend=="webdav" {
+        let result=crate::cross_sync::run(None)?;
+        println!("[Checkpoint] Sync: {} uploads, {} downloads, {} conflicts, {} errors",
+            result.uploaded,result.downloaded,result.conflicts,result.errors);
+        return Ok((result.uploaded,result.errors+result.conflicts,result.games));
+    }
     if !crate::process_games().is_empty() {
         return Err("Eglantine is running; refusing to back up active saves".into());
     }

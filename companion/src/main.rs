@@ -1,5 +1,6 @@
 mod sync;
 mod webdav;
+mod cross_sync;
 mod discovery;
 mod status;
 mod titles;
@@ -164,7 +165,7 @@ fn notice(message:&str,desktop:bool){
 fn main(){
     let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;let mut configure_webdav:Option<(String,String)>=None;let mut test_webdav=false;let mut list_backups:Option<String>=None;
     let mut restore_backup:Option<String>=None;let mut restore_target:Option<PathBuf>=None;
-    let mut confirm_restore=false;
+    let mut confirm_restore=false;let mut sync_adopt:Option<String>=None;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -176,7 +177,8 @@ fn main(){
             "--notify"=>desktop=true,"--once"=>once=true,
             "--refresh-titles"=>refresh_titles=true,
             "--status-json"=>status_json=true,
-            "--backup-once"=>sync_once=true,
+            "--backup-once"|"--sync-once"=>sync_once=true,
+            "--sync-adopt"=>sync_adopt=args.next(),
             "--test-webdav"=>test_webdav=true,
             "--list-backups"=>list_backups=args.next(),
             "--restore-backup"=>restore_backup=args.next(),
@@ -207,7 +209,7 @@ fn main(){
                     }
                 }
             },
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--backup-once] [--list-backups TITLE_ID] [--restore-backup SNAPSHOT_REF --to SAVE_DIR --confirm-restore] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--sync-once] [--sync-adopt TITLE_ID] [--backup-once] [--list-backups TITLE_ID] [--restore-backup SNAPSHOT_REF --to SAVE_DIR --confirm-restore] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -255,9 +257,19 @@ fn main(){
         if let Err(e)=sync::configure(&backend,&destination) {eprintln!("Config error: {e}");std::process::exit(2)}
         println!("[Checkpoint] Global backup destination saved");return;
     }
+    if let Some(title)=sync_adopt {
+        match cross_sync::run(Some(&title)) {
+            Ok(result)=>{
+                println!("[Checkpoint] Sync adoption: {} downloads, {} conflicts, {} errors",result.downloaded,result.conflicts,result.errors);
+                if result.conflicts>0||result.errors>0{std::process::exit(1);}
+            }
+            Err(error)=>{eprintln!("[Checkpoint] Sync adoption failed: {error}");std::process::exit(1)}
+        }
+        return;
+    }
     if sync_once {
         match sync::backup_idle() {
-            Ok((uploaded,failed,total))=>{println!("[Checkpoint] Backup: {uploaded} snapshots uploaded, {failed} failed; {total} distinct games backed up to this destination");if failed>0{std::process::exit(1)}},
+            Ok((uploaded,failed,total))=>{println!("[Checkpoint] Sync completed: {uploaded} uploads, {failed} conflicts/errors; {total} local saves paired");if failed>0{std::process::exit(1)}},
             Err(e)=>{eprintln!("[Checkpoint] Backup: {e}");std::process::exit(1)},
         }
         return;
@@ -277,7 +289,7 @@ fn main(){
         return;
     }
     let title_names=titles::load_or_refresh(refresh_titles);
-    println!("Checkpoint companion · save monitoring and automatic idle backups (restore disabled)");
+    println!("Checkpoint companion · save monitoring and idle cloud sync");
     match sync::backup_status() {
         Ok((false,_)) => eprintln!("[Checkpoint] WARNING: No backup destination configured. Use --configure-webdav HTTPS_URL USER or --configure-sync rclone/rsync DEST"),
         Ok((true,total)) => println!("[Checkpoint] Previously backed up games: {total}"),

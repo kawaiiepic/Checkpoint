@@ -427,3 +427,153 @@ pub fn keep_one_snapshot(cfg: &Config, device_folder: &str, preferred: Option<&s
     }
     Ok(removed)
 }
+
+
+// Canonical cross-device sync protocol: one pointer, one active generation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CloudFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CloudCurrent {
+    pub version: u32,
+    pub title: String,
+    pub generation: String,
+    pub digest: String,
+    pub writer: String,
+    pub files: Vec<CloudFile>,
+}
+pub struct CurrentResponse {
+    pub manifest: CloudCurrent,
+    pub etag: String,
+}
+fn current_path(title: &str) -> [&str; 3] { ["switch2", title, "current.json"] }
+
+pub fn get_current(cfg: &Config, title: &str) -> Result<Option<CurrentResponse>, String> {
+    if !crate::discovery::valid_title_id(title) {return Err("Invalid Switch 2 title".into());}
+    let client=client()?;
+    let base=root(cfg)?;
+    let response=authorize(client.get(target(&base,&current_path(title),false)?)
+        .header("Cache-Control","no-cache"),cfg).send()
+        .map_err(|e|format!("WebDAV current save: {e}"))?;
+    if response.status()==StatusCode::NOT_FOUND {return Ok(None);}
+    if !response.status().is_success() {return Err(error_status("read current save",response.status()));}
+    let etag=response.headers().get(reqwest::header::ETAG)
+        .ok_or("Nextcloud returned no ETag; safe concurrent sync unavailable")?
+        .to_str().map_err(|e|e.to_string())?.to_owned();
+    let bytes=response.bytes().map_err(|e|e.to_string())?;
+    if bytes.len()>8*1024*1024 {return Err("Cloud manifest too large".into());}
+    let manifest:CloudCurrent=serde_json::from_slice(&bytes).map_err(|e|format!("Invalid cloud manifest: {e}"))?;
+    validate_current(&manifest,title)?;
+    Ok(Some(CurrentResponse{manifest,etag}))
+}
+fn validate_current(current: &CloudCurrent,title: &str) -> Result<(),String> {
+    if current.version!=1 || current.title!=title || current.files.is_empty()
+       || current.files.len()>50000 || current.generation.is_empty()
+       || !current.generation.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-')
+       || current.digest.len()!=64 || !current.digest.bytes().all(|c|c.is_ascii_hexdigit()) {
+        return Err("Invalid cloud save manifest".into());
+    }
+    let mut paths=std::collections::BTreeSet::new();
+    for f in &current.files {
+        if f.sha256.len()!=64 || !f.sha256.bytes().all(|c|c.is_ascii_hexdigit())
+          || f.path.is_empty() || !paths.insert(f.path.clone())
+          || f.path.split('/').any(|p|p.is_empty()||p=="."||p==".."||p.contains('\\')||p.contains('%'))
+          || f.path.starts_with('/') {
+            return Err("Invalid cloud file path or hash".into());
+        }
+    }
+    Ok(())
+}
+pub fn upload_generation(cfg:&Config, source:&Path, current:&CloudCurrent) -> Result<(),String> {
+    validate_current(current,&current.title)?;
+    let client=client()?;
+    let base=root(cfg)?;
+    let prefix=["switch2",current.title.as_str(),"data",current.generation.as_str()];
+    for count in 1..=prefix.len() {
+        ensure_folder(&client,cfg,target(&base,&prefix[..count],true)?)?;
+    }
+    let mut created=std::collections::BTreeSet::new();
+    for entry in &current.files {
+        let names:Vec<&str>=entry.path.split('/').collect();
+        for n in 1..names.len() {
+            let mut segments=prefix.to_vec();segments.extend_from_slice(&names[..n]);
+            if created.insert(segments.join("/")) {
+                ensure_folder(&client,cfg,target(&base,&segments,true)?)?;
+            }
+        }
+        let mut path=prefix.to_vec();path.extend_from_slice(&names);
+        put_file(&client,cfg,target(&base,&path,false)?,&source.join(&entry.path))?;
+    }
+    Ok(())
+}
+pub fn publish_current(cfg:&Config,manifest:&CloudCurrent,previous:Option<&str>) -> Result<(),String> {
+    validate_current(manifest,&manifest.title)?;
+    let client=client()?;
+    let root=root(cfg)?;
+    let parent=["switch2",manifest.title.as_str()];
+    ensure_folder(&client,cfg,target(&root,&parent,true)?)?;
+    let mut request=authorize(client.put(target(&root,&current_path(&manifest.title),false)?),cfg);
+    request=if let Some(etag)=previous {
+        request.header(reqwest::header::IF_MATCH,etag)
+    }else{request.header(IF_NONE_MATCH,"*")};
+    let response=request.json(manifest).send().map_err(|e|format!("Publish cloud current: {e}"))?;
+    if response.status()==StatusCode::PRECONDITION_FAILED ||
+       response.status()==StatusCode::CONFLICT {
+        return Err("CONFLICT: Cloud save changed on another device. No data overwritten".into());
+    }
+    if !response.status().is_success() {return Err(error_status("publish current",response.status()));}
+    Ok(())
+}
+pub fn delete_generation(cfg:&Config,title:&str,generation:&str) -> Result<(),String> {
+    if !crate::discovery::valid_title_id(title) || generation.is_empty()
+        || !generation.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-') {
+        return Err("Unsafe cloud generation path".into());
+    }
+    // Never delete the active cloud version.
+    if get_current(cfg,title)?.is_some_and(|c|c.manifest.generation==generation) {
+        return Err("Refusing to delete current cloud save".into());
+    }
+    let client=client()?;
+    let base=root(cfg)?;
+    let response=authorize(client.request(method(b"DELETE"),
+        target(&base,&["switch2",title,"data",generation],true)?),cfg)
+        .send().map_err(|e|format!("WebDAV cleanup: {e}"))?;
+    if response.status().is_success() || response.status()==StatusCode::NOT_FOUND {Ok(())}
+    else {Err(error_status("delete old cloud generation",response.status()))}
+}
+pub fn download_current(cfg:&Config, current:&CloudCurrent, directory:&Path) -> Result<(),String> {
+    validate_current(current,&current.title)?;
+    let client=client()?;
+    let base=root(cfg)?;
+    for entry in &current.files {
+        let pieces:Vec<&str>=entry.path.split('/').collect();
+        let mut parts=vec!["switch2",current.title.as_str(),"data",current.generation.as_str()];
+        parts.extend_from_slice(&pieces);
+        let destination=directory.join(&entry.path);
+        fs::create_dir_all(destination.parent().ok_or("Invalid destination path")?).map_err(|e|e.to_string())?;
+        let mut response=authorize(client.get(target(&base,&parts,false)?),cfg)
+            .send().map_err(|e|format!("Cloud file download: {e}"))?;
+        if !response.status().is_success() {return Err(error_status("download current file",response.status()));}
+        let mut file=File::create(&destination).map_err(|e|e.to_string())?;
+        let mut hasher=sha2::Sha256::new();
+        use sha2::Digest;
+        let mut total=0u64;
+        let mut buffer=[0u8;64*1024];
+        loop {
+            let n=std::io::Read::read(&mut response,&mut buffer).map_err(|e|e.to_string())?;
+            if n==0 {break;}
+            total=total.saturating_add(n as u64);
+            if total>entry.size {return Err(format!("Cloud file larger than expected: {}",entry.path));}
+            std::io::Write::write_all(&mut file,&buffer[..n]).map_err(|e|e.to_string())?;
+            hasher.update(&buffer[..n]);
+        }
+        if total!=entry.size || format!("{:x}",hasher.finalize())!=entry.sha256 {
+            return Err(format!("Cloud file checksum mismatch: {}",entry.path));
+        }
+        file.sync_all().map_err(|e|e.to_string())?;
+    }
+    Ok(())
+}

@@ -104,3 +104,17 @@ The companion refuses to restore while Eglantine is running, requires an existin
 Checkpoint now keeps **one completed cloud snapshot per Switch 2 title ID, save layout, local profile and device** instead of indefinite timestamped revision history. On an updated save, it uploads and completes the new snapshot **before** deleting older snapshots from that same game/profile/device. An upload failure leaves prior snapshots intact. On the next idle backup pass, it also prunes older snapshots belonging to unchanged saves, including leftover incomplete snapshot directories when a complete copy exists. It never prunes other devices or profiles. Remote cleanup errors are reported rather than silently ignored.
 
 This applies to **native WebDAV**. Legacy `rclone` and `rsync` destinations still use the previous versioned-upload behavior. Nextcloud's own versioning and trash may retain deleted files and continue to consume server storage; configure Nextcloud retention separately if needed. The local pre-restore safety directory is still retained to protect your current save.
+
+## Automatic PC ↔ Steam Deck sync (native WebDAV)
+
+**New canonical cloud layout:** `Checkpoint/switch2/<TITLE_ID>/current.json` references one immutable active `data/<generation>/` save folder. New uploads complete before the current pointer changes, using HTTP conditional requests (ETag / If-Match). After publication, Checkpoint removes the prior referenced generation. This avoids partially replacing a save on the server, with normally only **one active cloud save per title**. An interrupted upload may leave an unreferenced staging generation; it never becomes the active save. Existing older `snapshots/` folders from pre-sync versions are **not automatically deleted**.
+
+`--sync-once` performs one sync while Eglantine is completely closed. The normal CLI and Decky bridge automatically run the same sync roughly every 30 seconds while idle. `--backup-once` remains an alias for the new WebDAV sync behavior. A full SHA-256 inventory determines actual local modifications. First device creates cloud save. If the next device already has identical save contents, it pairs automatically. If its initial local save differs, Checkpoint reports a **conflict** without changing either side. To intentionally use the cloud version on that device (and preserve the existing local save as a sibling recovery folder), run:
+
+```sh
+checkpoint-companion --sync-adopt 04007EF01F8AE000
+```
+
+After pairing, unchanged local saves automatically download newer cloud saves, and locally changed saves publish only if the cloud version has not moved. If both changed, Checkpoint stops with a conflict and leaves both untouched. Downloads verify file hashes and preserve the old save locally before replacing it. If multiple save profiles are found for the same title on a device, syncing that game stops rather than selecting the wrong profile. Automatic syncing **does not create absent Eglantine save directories**, so launch the game and create a local save once first.
+
+**Do not run Eglantine simultaneously on PC and Deck expecting live merging.** Stop Eglantine on one device and let Checkpoint finish before moving to the next. Nextcloud's own versions/trash may use additional storage. Remote unreferenced generations and old legacy snapshot folders require separate maintenance.

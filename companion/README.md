@@ -57,3 +57,7 @@ Run `--list-backups SWITCH2_TITLE_ID` to print complete native WebDAV snapshots.
 ### One cloud copy per game (native WebDAV)
 
 Automatic native WebDAV backups now retain one completed snapshot per title/layout/profile/device. A successful new upload triggers WebDAV deletion of older revisions only in the matching scope; the idle scan also prunes previously accumulated revisions even if nothing changed. Old snapshots for other devices/profiles are untouched. Nextcloud's versioning and trash may still use storage.
+
+### Cross-device sync (native WebDAV)
+
+`--sync-once` (or `--backup-once` for backward compatibility) automatically uploads changed saves and downloads newer saves while Eglantine is closed. One cloud current pointer per title, plus its referenced save directory; old cloud generations are removed only after a successful conditional update. On first pairing, run `--sync-adopt TITLE_ID` on a device with a different initial local save to intentionally replace it with the cloud version. Checkpoint preserves the replaced local save in a sibling recovery directory. SHA-256 hashes and conditional ETags prevent most unintended overwrites; divergent changes cause a conflict and require manual resolution. Old legacy snapshot folders are not removed automatically.
