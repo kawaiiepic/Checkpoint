@@ -29,3 +29,7 @@ Checkpoint can now read the newest `BootGame: Booting game: TITLE_ID | TITLE |` 
 ### Reading .nup metadata
 
 For a directly launched `.nup`, Checkpoint reads and validates the NUP v1 TOC and metadata in read-only mode. The embedded game title (TLV 0x0005) and 64-bit title ID are displayed if present; missing titles fall back to the filename. Archive parsing is bounded and does not decompress ROM contents. Invalid or unsupported archives fall back to their filenames without stopping monitoring. NUP metadata is a hint for game identification, not yet a verified association with a particular save directory. See the [NUP v1 specification](https://github.com/a55uka/nup/blob/744fb7e30ce3ace787f1839ee3e7f8a010e36c04/SPEC.md).
+
+### Switch 2 game-name lookup
+
+The companion uses **only** the [Switchbrew Switch 2 Games table](https://switchbrew.org/wiki/Switch_2:_Title_list/Games), filtering IDs to 16 hex digits beginning with `0400`. It caches the scraped title-ID-to-name mapping in `~/.cache/checkpoint/switch2-titles.tsv` (or `$XDG_CACHE_HOME/checkpoint/switch2-titles.tsv`) and refreshes it when older than 7 days. `--refresh-titles` forces a refresh. If the website is unavailable, the existing cache is retained, and Eglantine's own game label remains the fallback. Online data is used for **display names only**, never save-write decisions. Switch 1 games are intentionally not looked up.

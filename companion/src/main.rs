@@ -1,3 +1,4 @@
+mod titles;
 mod nup;
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
 type Files = BTreeMap<PathBuf, (u64,u128)>;
@@ -88,7 +89,7 @@ fn parse_boot_event(line: &str) -> Option<BootEvent> {
     let mut fields = data.split('|').map(str::trim);
     let id = fields.next()?;
     let title = fields.next()?;
-    if id.len() != 16 || !id.chars().all(|c| c.is_ascii_hexdigit()) || title.is_empty() {
+    if !titles::is_switch2_id(id) || title.is_empty() {
         return None;
     }
     Some(BootEvent { title_id: id.to_ascii_uppercase(), title: title.to_owned() })
@@ -157,7 +158,7 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -167,7 +168,8 @@ fn main(){
             "--active-seconds"=>active=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--idle-seconds"=>idle=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--notify"=>desktop=true,"--once"=>once=true,
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--notify] [--once]");return},
+            "--refresh-titles"=>refresh_titles=true,
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -180,6 +182,7 @@ fn main(){
     }
     let home=PathBuf::from(env::var_os("HOME").expect("HOME not set"));
     let logs=log_override.map(|p|vec![p]).unwrap_or_else(||log_candidates(&home));
+    let title_names=titles::load_or_refresh(refresh_titles);
     println!("Checkpoint companion · read-only; no uploads or downloads");
     for p in &roots{println!("  watching {}",p.display())}
     let mut old_games:Option<Vec<(u32,Option<String>)>>=None;
@@ -216,13 +219,13 @@ fn main(){
         if session_changed{
             if games.is_empty(){if old_games.as_ref().is_some_and(|x|!x.is_empty()){notice("Eglantine exited",desktop)}}
             else{
-                let game=last_boot.as_ref().map(|event|format!("{} [{}]",event.title,event.title_id))
+                let game=last_boot.as_ref().map(|event|titles::display(&event.title_id,&event.title,&title_names))
                     .unwrap_or_else(||session_label(&games));
                 notice(&format!("Eglantine detected: {game}"),desktop)
             }
             pending=None;
         }else if boot_changed {
-            if let Some(event)=&last_boot { notice(&format!("Game boot detected: {} [{}]",event.title,event.title_id),desktop); }
+            if let Some(event)=&last_boot { notice(&format!("Game boot detected: {}",titles::display(&event.title_id,&event.title,&title_names)),desktop); }
         }
         if !session_changed {
           if let Some(old)=&old_files{
