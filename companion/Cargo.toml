@@ -1,0 +1,8 @@
+[package]
+name = "checkpoint-companion"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal-only Eglantine save watcher"
+license = "MIT"
+
+[dependencies]
