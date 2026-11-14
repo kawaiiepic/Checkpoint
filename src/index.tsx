@@ -111,6 +111,13 @@ function Content() {
         </div>
       </PanelSectionRow>
       <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => toaster.toast({
+          title: 'Checkpoint notifications working',
+          body: 'This is a test. No save was uploaded or downloaded.',
+          icon: <FaCloud />,
+        })}>Test notification</ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
         <ButtonItem layout="below" onClick={() => void clearActivity().then(() => refresh()).catch(e => setError(String(e)))}>
           Clear console
         </ButtonItem>

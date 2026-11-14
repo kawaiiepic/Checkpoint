@@ -117,6 +117,7 @@ class Plugin:
         last_configured = None
         sync_was_blocked = False
         tick = 0
+        notify_after_exit = False
         while True:
             try:
                 current = await self._read_monitor()
@@ -171,6 +172,7 @@ class Plugin:
                     sync_was_blocked = True
                 elif sync_was_blocked:
                     backup_counter = 5
+                    notify_after_exit = True
                     self._record("sync", "Eglantine closed; starting immediate sync check")
                     sync_was_blocked = False
                 # Every ~30 seconds while idle. Rust checks again immediately before copying.
@@ -180,6 +182,12 @@ class Plugin:
                         backup_counter = 0
                         if not current.get("backup_configured"):
                             self._record("error", "Sync skipped: no cloud destination configured on this Deck. Run checkpoint-companion --configure-webdav to configure it.")
+                            if notify_after_exit:
+                                await decky.emit("sync_notification", {
+                                    "kind": "error", "title": "Checkpoint sync skipped",
+                                    "body": "Configure Nextcloud WebDAV on your Deck to sync saves.",
+                                })
+                                notify_after_exit = False
                             last_session = session
                             await asyncio.sleep(POLL_SECONDS)
                             continue
@@ -189,6 +197,11 @@ class Plugin:
                             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                         )
                         self._record("sync", "Checking Nextcloud for save changes")
+                        if notify_after_exit:
+                            await decky.emit("sync_notification", {
+                                "kind": "start", "title": "Checkpoint syncing",
+                                "body": "Checking cloud saves after Eglantine closed...",
+                            })
                         try:
                             backup_out, backup_err = await asyncio.wait_for(backup.communicate(), timeout=90)
                         except asyncio.TimeoutError:
@@ -221,6 +234,11 @@ class Plugin:
                                     "kind": "error", "title": "Checkpoint needs attention",
                                     "body": f"{conflicts} conflict(s), {errors} error(s). See activity console.",
                                 })
+                            if notify_after_exit and not (uploads or downloads or conflicts or errors):
+                                await decky.emit("sync_notification", {
+                                    "kind": "idle", "title": "Checkpoint sync checked",
+                                    "body": "Cloud saves are already up to date. Nothing to transfer.",
+                                })
                         self.last_sync = datetime.now().astimezone().isoformat(timespec="seconds")
                         if backup.returncode:
                             reason = next((line.removeprefix("[Checkpoint] ").strip()
@@ -239,6 +257,12 @@ class Plugin:
                                 self._record("sync", "Sync complete: no changes to upload or download")
                         elif not any(line.startswith("[Checkpoint] Sync:") for line in stdout.splitlines()):
                             self._record("info", "Sync command completed without a native WebDAV transfer summary; check configured backend")
+                            if notify_after_exit:
+                                await decky.emit("sync_notification", {
+                                    "kind": "idle", "title": "Checkpoint sync check finished",
+                                    "body": "No WebDAV transfer summary. See activity console.",
+                                })
+                        notify_after_exit = False
                 else:
                     backup_counter = 0
                 last_session = session
