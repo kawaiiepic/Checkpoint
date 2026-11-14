@@ -12,6 +12,9 @@ pub struct Snapshot {
     pub saves: Vec<SaveLocation>,
     pub watched_files: usize,
     pub last_modified_ms: Option<u64>,
+    pub backup_configured: bool,
+    pub backed_up_games: usize,
+    pub backup_error: Option<String>,
 }
 pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
     let processes = crate::process_games();
@@ -41,9 +44,14 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
     let saves = title_id.as_ref().map(|id|discovery::discover(&roots, id)).unwrap_or_default();
     let watched_files = saves.iter().map(|item|item.file_count).sum();
     let last_modified_ms = saves.iter().filter_map(|item|item.last_modified_ms).max();
+    let (backup_configured, backed_up_games, backup_error) = match crate::sync::backup_status() {
+        Ok((configured,count)) => (configured,count,None),
+        Err(error) => (false,0,Some(error)),
+    };
     Snapshot {
         running: !processes.is_empty(), process_count: processes.len(), game, title_id,
         save_roots: roots.iter().map(|r|r.to_string_lossy().into_owned()).collect(),
-        saves, watched_files, last_modified_ms
+        saves, watched_files, last_modified_ms,
+        backup_configured, backed_up_games, backup_error
     }
 }

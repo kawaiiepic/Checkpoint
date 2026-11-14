@@ -174,7 +174,20 @@ fn main(){
             "--refresh-titles"=>refresh_titles=true,
             "--status-json"=>status_json=true,
             "--backup-once"=>sync_once=true,
-            "--configure-sync"=>configure_sync=Some((args.next().expect("Backend required"),args.next().expect("Destination required"))),
+            "--configure-sync"=>{
+                let backend = args.next().filter(|v| !v.starts_with("--"));
+                let destination = args.next().filter(|v| !v.starts_with("--"));
+                match (backend, destination) {
+                    (Some(backend), Some(destination)) => configure_sync=Some((backend,destination)),
+                    _ => {
+                        eprintln!("Missing arguments for --configure-sync.");
+                        eprintln!("Usage:");
+                        eprintln!("  checkpoint-companion --configure-sync rclone 'mywebdav:Checkpoint'");
+                        eprintln!("  checkpoint-companion --configure-sync rsync 'server:/backups/Checkpoint'");
+                        std::process::exit(2);
+                    }
+                }
+            },
             "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--backup-once] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
@@ -185,7 +198,7 @@ fn main(){
     }
     if sync_once {
         match sync::backup_idle() {
-            Ok((uploaded,failed))=>{println!("[Checkpoint] Backup: {uploaded} snapshots uploaded, {failed} failed");if failed>0{std::process::exit(1)}},
+            Ok((uploaded,failed,total))=>{println!("[Checkpoint] Backup: {uploaded} snapshots uploaded, {failed} failed; {total} distinct games backed up to this destination");if failed>0{std::process::exit(1)}},
             Err(e)=>{eprintln!("[Checkpoint] Backup: {e}");std::process::exit(1)},
         }
         return;
@@ -205,7 +218,12 @@ fn main(){
         return;
     }
     let title_names=titles::load_or_refresh(refresh_titles);
-    println!("Checkpoint companion · read-only; no uploads or downloads");
+    println!("Checkpoint companion · save monitoring and automatic idle backups (restore disabled)");
+    match sync::backup_status() {
+        Ok((false,_)) => eprintln!("[Checkpoint] WARNING: No backup destination configured. Use --configure-sync rclone REMOTE:Checkpoint or --configure-sync rsync HOST:/path/Checkpoint"),
+        Ok((true,total)) => println!("[Checkpoint] Previously backed up games: {total}"),
+        Err(error) => eprintln!("[Checkpoint] Backup config error: {error}"),
+    }
     for p in &roots{println!("  watching {}",p.display())}
     let mut old_games:Option<Vec<(u32,Option<String>)>>=None;
     let mut old_files:Option<Files>=None;let mut old_remote:Option<Vec<u8>>=None;
@@ -287,8 +305,13 @@ fn main(){
             }
         }
         if games.is_empty() {
-            if let Err(err)=sync::backup_idle() {
-                eprintln!("[Checkpoint] Automatic backup: {err}");
+            match sync::backup_idle() {
+                Ok((uploaded,failed,total)) if uploaded>0 || failed>0 => {
+                    println!("[Checkpoint] Automatic backup: {uploaded} new snapshots, {failed} failed; {total} games backed up");
+                }
+                Err(err) if !err.starts_with("No backup destination configured") =>
+                    eprintln!("[Checkpoint] Automatic backup: {err}"),
+                _ => {}
             }
         }
         if once{break}

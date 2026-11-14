@@ -11,6 +11,9 @@ type Status = {
   last_game?: string | null;
   watched_files: number;
   last_modified_ms?: number | null;
+  backup_configured?: boolean;
+  backed_up_games?: number;
+  backup_error?: string | null;
   title_id?: string | null;
   process_count?: number;
   saves?: { path: string; profile: string; layout: string; file_count: number; last_modified_ms?: number | null }[];
@@ -55,6 +58,11 @@ function Content() {
         <ButtonItem layout="below" onClick={() => void refresh()}>Refresh detection</ButtonItem>
       </PanelSectionRow>
       {(error || status?.error) && <PanelSectionRow><div>{error || status?.error}</div></PanelSectionRow>}
+    </PanelSection>
+    <PanelSection title="Backup">
+      <PanelSectionRow>
+        <div>{status?.backup_error ? `Backup configuration error: ${status.backup_error}` : status?.backup_configured ? `Games backed up: ${status.backed_up_games ?? 0}` : 'Backup destination not configured. Set one global destination with --configure-sync.'}</div>
+      </PanelSectionRow>
     </PanelSection>
     <PanelSection title="Prototype limitations">
       <PanelSectionRow>

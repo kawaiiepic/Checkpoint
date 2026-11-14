@@ -11,7 +11,11 @@ use std::{
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config { pub backend: String, pub destination: String }
 #[derive(Default, Serialize, Deserialize)]
-struct State { uploads: BTreeMap<String, String> }
+struct State {
+    uploads: BTreeMap<String, String>,
+    #[serde(default)]
+    backed_up_titles: BTreeMap<String, BTreeSet<String>>,
+}
 
 fn home() -> PathBuf { PathBuf::from(env::var_os("HOME").unwrap_or_default()) }
 pub fn config_path() -> PathBuf {
@@ -128,8 +132,24 @@ fn upload(cfg: &Config, source: &Path, target_suffix: &str) -> Result<(), String
     }
     Ok(())
 }
-pub fn backup_idle() -> Result<(usize,usize), String> {
-    let Some(cfg) = load()? else {return Ok((0,0))};
+fn destination_key(cfg: &Config) -> String {
+    format!("{}|{}", cfg.backend, cfg.destination)
+}
+pub fn backup_status() -> Result<(bool, usize), String> {
+    let Some(cfg) = load()? else {return Ok((false,0))};
+    let state = fs::read(state_path()).ok()
+        .and_then(|bytes|serde_json::from_slice::<State>(&bytes).ok())
+        .unwrap_or_default();
+    let count = state.backed_up_titles.get(&destination_key(&cfg)).map_or(0,BTreeSet::len);
+    Ok((true,count))
+}
+pub fn backup_idle() -> Result<(usize,usize,usize), String> {
+    let Some(cfg) = load()? else {
+        return Err(format!(
+            "No backup destination configured (missing {}). Usage: --configure-sync rclone REMOTE:Checkpoint or --configure-sync rsync HOST:/path/Checkpoint",
+            config_path().display()
+        ));
+    };
     if !crate::process_games().is_empty() {
         return Err("Eglantine is running; refusing to back up active saves".into());
     }
@@ -140,12 +160,19 @@ pub fn backup_idle() -> Result<(usize,usize), String> {
     let device=device_id();
     let mut done=0usize;
     let mut failures=0usize;
+    let destination=destination_key(&cfg);
+    let mut dirty=false;
     for (id, save) in entries(&roots) {
         let profile=part_name(&save.profile);
         let profile=if profile.is_empty() {"unknown".into()} else {profile};
         let folder=format!("switch2/{id}/{}/{}/{}",save.layout,profile,device);
         let key=format!("{}|{}|{}",cfg.backend,cfg.destination,save.path);
-        if state.uploads.get(&key).is_some_and(|old| old==&save.signature) {continue}
+        if state.uploads.get(&key).is_some_and(|old| old==&save.signature) {
+            if state.backed_up_titles.entry(destination.clone()).or_default().insert(id.clone()) {
+                dirty=true;
+            }
+            continue
+        }
         // An immutable timestamped revision avoids overwriting existing remote data.
         // A revision is never pruned automatically. No delete or remote restore here.
         let millis=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
@@ -153,13 +180,17 @@ pub fn backup_idle() -> Result<(usize,usize), String> {
         match upload(&cfg,Path::new(&save.path),&revision) {
             Ok(()) => {
                 state.uploads.insert(key,save.signature);
+                state.backed_up_titles.entry(destination.clone()).or_default().insert(id.clone());
                 save_atomic(&path,&state)?;
+                dirty=false;
                 done+=1;
             }
             Err(error) => {failures+=1;eprintln!("[Checkpoint] Backup failed for {id}: {error}");}
         }
     }
-    Ok((done,failures))
+    if dirty {save_atomic(&path,&state)?;}
+    let total=state.backed_up_titles.get(&destination).map_or(0,BTreeSet::len);
+    Ok((done,failures,total))
 }
 
 #[cfg(test)]
