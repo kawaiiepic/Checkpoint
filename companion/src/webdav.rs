@@ -7,6 +7,7 @@ use reqwest::{
 };
 use std::{
     fs::{self, File},
+    io,
     path::Path,
     time::Duration,
 };
