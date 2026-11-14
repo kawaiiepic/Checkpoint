@@ -252,7 +252,12 @@ fn main(){
         println!("[Checkpoint] {} Eglantine process(es), {} save files",games.len(),current.len());
         if let Some(boot) = &last_boot {
             let found=discovery::discover(&discovery::candidate_roots(&roots,&games.iter().map(|(pid,_)|*pid).collect::<Vec<_>>()), &boot.title_id);
-            for save in found {println!("[Checkpoint] Save: {} ({}, profile {}, {} files)",save.path,save.layout,save.profile,save.file_count);}
+            for save in found {
+                let timestamp = save.last_modified_ms
+                    .map(|ms|format!("last modified {} (Unix ms)",ms))
+                    .unwrap_or_else(||"last modified unknown".to_owned());
+                println!("[Checkpoint] Save: {} ({}, profile {}, {} files, {})",save.path,save.layout,save.profile,save.file_count,timestamp);
+            }
         }
         old_games=Some(games.clone());old_files=Some(current);
         if let Some(path)=&remote{

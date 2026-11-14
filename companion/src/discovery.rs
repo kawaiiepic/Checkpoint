@@ -10,14 +10,17 @@ pub struct SaveLocation {
     pub profile: String,
     pub file_count: usize,
     pub signature: String,
+    /// Newest regular save file mtime in Unix milliseconds, if available.
+    pub last_modified_ms: Option<u64>,
 }
 
 pub fn valid_title_id(id: &str) -> bool {
     id.len() == 16 && id.starts_with("0400") && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn scan_files(path: &Path) -> (usize, String) {
+fn scan_files(path: &Path) -> (usize, String, Option<u64>) {
     let mut paths = Vec::new();
+    let mut latest_ms: Option<u64> = None;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if paths.len() >= 50_000 { break; }
@@ -27,8 +30,14 @@ fn scan_files(path: &Path) -> (usize, String) {
             if meta.file_type().is_symlink() { continue; }
             if meta.is_dir() { stack.push(entry.path()); }
             if meta.is_file() {
-                let modified = meta.modified().unwrap_or(UNIX_EPOCH)
-                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+                let timestamp = meta.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok());
+                let modified = timestamp.map_or(0, |t|t.as_nanos());
+                // Eglantine's bookkeeping file is not actual player progress.
+                if entry.file_name() != OsStr::new(".yuzu_save_size") {
+                    if let Some(ms) = timestamp.and_then(|t|u64::try_from(t.as_millis()).ok()) {
+                        latest_ms = Some(latest_ms.map_or(ms, |previous| previous.max(ms)));
+                    }
+                }
                 paths.push((entry.path(), meta.len(), modified));
             }
         }
@@ -41,7 +50,7 @@ fn scan_files(path: &Path) -> (usize, String) {
         use std::fmt::Write as _;
         let _ = write!(signature, "{}:{size}:{modified}\n", path.display());
     }
-    (paths.len(), format!("{:016x}", stable_hash(signature.as_bytes())))
+    (paths.len(), format!("{:016x}", stable_hash(signature.as_bytes())), latest_ms)
 }
 fn stable_hash(data: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -86,7 +95,7 @@ pub fn candidate_roots(extra: &[PathBuf], pids: &[u32]) -> Vec<PathBuf> {
 }
 fn add_location(out: &mut Vec<SaveLocation>, path: &Path, layout: &str, profile: &str) {
     if !path.is_dir() { return; }
-    let (count, signature) = scan_files(path);
+    let (count, signature, last_modified_ms) = scan_files(path);
     if count == 0 { return; }
     out.push(SaveLocation {
         path: path.to_string_lossy().into_owned(),
@@ -94,6 +103,7 @@ fn add_location(out: &mut Vec<SaveLocation>, path: &Path, layout: &str, profile:
         profile: profile.into(),
         file_count: count,
         signature,
+        last_modified_ms,
     });
 }
 pub fn discover(roots: &[PathBuf], id: &str) -> Vec<SaveLocation> {
@@ -137,6 +147,12 @@ mod tests {
     #[test] fn switch2_only() {
         assert!(valid_title_id("04007EF01F8AE000"));
         assert!(!valid_title_id("01007EF01F8AE000"));
+    }
+    #[test] fn timestamps_are_optional_for_missing_data() {
+        let root = std::env::temp_dir().join(format!("checkpoint-empty-test-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(scan_files(&root).2, None);
+        let _ = std::fs::remove_dir(&root);
     }
     #[test] fn stable_hash_changes() { assert_ne!(stable_hash(b"a"), stable_hash(b"b")); }
 }

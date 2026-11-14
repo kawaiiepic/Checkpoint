@@ -10,13 +10,19 @@ type Status = {
   last_update?: string | null;
   last_game?: string | null;
   watched_files: number;
+  last_modified_ms?: number | null;
   title_id?: string | null;
   process_count?: number;
-  saves?: { path: string; profile: string; layout: string; file_count: number }[];
+  saves?: { path: string; profile: string; layout: string; file_count: number; last_modified_ms?: number | null }[];
   error?: string | null;
 };
 type Change = { game: string; title_id?: string; changed_count: number };
 const getStatus = callable<[], Status>('get_status');
+
+function formatSaveTime(ms?: number | null): string {
+  if (ms == null || !Number.isFinite(ms)) return 'Unknown';
+  return new Date(ms).toLocaleString();
+}
 
 function Content() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -38,10 +44,8 @@ function Content() {
         <div>{status ? `Monitoring ${status.watched_files} save files` : 'Checking...'}</div>
       </PanelSectionRow>
       <PanelSectionRow><div>{status?.title_id ? `Title ID: ${status.title_id}` : 'Title ID not detected'}</div></PanelSectionRow>
-      <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path}`).join(' | ') : 'No matching save directory found'}</div></PanelSectionRow>
-      <PanelSectionRow>
-        <div>{status?.last_update ? `Last local update: ${status.last_game} (${status.last_update})` : 'No save updates detected yet'}</div>
-      </PanelSectionRow>
+      <PanelSectionRow><div>Last save modified: {formatSaveTime(status?.last_modified_ms)}</div></PanelSectionRow>
+      <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path} (updated ${formatSaveTime(s.last_modified_ms)})`).join(' | ') : 'No matching save directory found'}</div></PanelSectionRow>
       <PanelSectionRow>
         <div style={{ fontSize: 'small', opacity: 0.7 }}>
           {status?.save_roots?.length ? `Save roots: ${status.save_roots.join(', ')}` : 'No Eglantine save directory found. See README.'}
