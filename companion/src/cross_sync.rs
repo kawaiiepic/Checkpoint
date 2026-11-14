@@ -143,7 +143,7 @@ fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
 fn install_missing(cfg:&sync::Config,current:&webdav::CurrentResponse,
     destination:&Path,id:&str)->Result<(),String>{
     if current.manifest.save_layout.as_deref()!=Some("account") {
-        return Err("Cloud save does not declare account layout; cannot safely create a missing save directory. Reupload this game with an updated Checkpoint first".into());
+        return Err("Cloud save predates account-layout metadata. Run the updated Checkpoint --sync-once on the original PC with its matching local account save, then retry here".into());
     }
     if destination.exists() {return Err("Local destination appeared during sync".into());}
     let parent=destination.parent().ok_or("Missing save parent")?;
@@ -170,6 +170,31 @@ fn install_missing(cfg:&sync::Config,current:&webdav::CurrentResponse,
 fn save_key(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation)->String{
     format!("{}|{}|{}",cfg.destination,id,save.path)
 }
+/// Upgrade a legacy current.json that predates save_layout. Only the machine
+/// with a matching local account save can attest to its layout. Updating the
+/// pointer conditionally preserves the immutable cloud data generation.
+fn attest_legacy_layout(
+    cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,local_digest:&str,
+    current:webdav::CurrentResponse,
+)->Result<webdav::CurrentResponse,String>{
+    if current.manifest.save_layout.is_some() || save.layout!="account" ||
+       current.manifest.digest!=local_digest {
+        return Ok(current);
+    }
+    let mut updated=current.manifest.clone();
+    updated.save_layout=Some("account".into());
+    webdav::publish_current(cfg,&updated,Some(&current.etag))?;
+    println!("[Checkpoint] Verified and upgraded legacy account-save metadata for {id}");
+    let published=webdav::get_current(cfg,id)?
+        .ok_or("Cloud pointer disappeared after metadata update")?;
+    if published.manifest.generation!=updated.generation ||
+       published.manifest.digest!=updated.digest ||
+       published.manifest.save_layout.as_deref()!=Some("account"){
+        return Err("Cloud pointer changed after metadata update; retry sync".into());
+    }
+    Ok(published)
+}
+
 fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
     state:&mut SyncState,adopt:bool)->Result<&'static str,String>{
     let source=Path::new(&save.path);
@@ -177,6 +202,10 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
     let key=save_key(cfg,id,save);
     let previous=state.bases.get(&key).cloned();
     let remote=webdav::get_current(cfg,id)?;
+    let remote=match remote {
+        Some(current)=>Some(attest_legacy_layout(cfg,id,save,&local,current)?),
+        None=>None,
+    };
     match (previous,remote) {
         (None,None)=>{
             // First machine seeds the empty cloud. Conditional creation protects races.
