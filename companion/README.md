@@ -49,3 +49,7 @@ Backup status distinguishes missing configuration from zero changes: `--backup-o
 ### Native WebDAV (Nextcloud)
 
 `--configure-webdav HTTPS_URL USER` prompts for the app password, verifies the WebDAV endpoint using PROPFIND, and stores the global URL and credentials locally with 0600 permissions. The URL should end with `/remote.php/dav/files/USER/Checkpoint`. For an already configured native WebDAV destination, `--test-webdav` checks connectivity. The native transport uses reqwest over HTTPS, MKCOL directories, and streaming PUT uploads. Snapshots get a completion marker after all files upload. No rclone/rsync installation required for native WebDAV.
+
+### Manual restore
+
+Run `--list-backups SWITCH2_TITLE_ID` to print complete native WebDAV snapshots. Then pass the exact snapshot path to `--restore-backup SNAPSHOT_REF --to EXISTING_LOCAL_SAVE_PATH --confirm-restore`. The emulator must be closed, and the destination must be a discovered save folder for the same title. Files are downloaded and checked before any original local save is renamed; originals are preserved as sibling backups. No automatic download or conflict resolution.

@@ -193,3 +193,179 @@ mod tests {
         assert!(output.as_str().contains("save%20with%20spaces"));
     }
 }
+
+// Manual WebDAV restore is deliberately separate from automatic upload.
+use std::io::Read as _;
+
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    pub relative: String,
+    pub files: usize,
+}
+
+#[derive(Debug)]
+struct RemoteItem {
+    name: String,
+    is_dir: bool,
+    size: Option<u64>,
+}
+
+fn list_collection(client: &Client, cfg: &Config, base: &Url, parts: &[&str]) -> Result<Vec<RemoteItem>,String> {
+    let url=target(base,parts,true)?;
+    let response=authorize(client.request(method(b"PROPFIND"),url.clone())
+        .header("Depth","1")
+        .header("Content-Type","application/xml; charset=utf-8")
+        .body(r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"#),cfg)
+        .send().map_err(|e|format!("WebDAV listing: {e}"))?;
+    if response.status() == StatusCode::NOT_FOUND {return Ok(vec![]);}
+    if response.status()!=StatusCode::MULTI_STATUS {return Err(error_status("list",response.status()));}
+    let body=response.bytes().map_err(|e|format!("WebDAV listing body: {e}"))?;
+    if body.len()>8*1024*1024 {return Err("WebDAV listing too large".into());}
+    let xml=roxmltree::Document::parse(std::str::from_utf8(&body).map_err(|e|e.to_string())?)
+        .map_err(|e|format!("WebDAV XML: {e}"))?;
+    let mut found=Vec::new();
+    let parent=url.path().trim_end_matches('/');
+    for entry in xml.descendants().filter(|n|n.is_element() && n.tag_name().name()=="response") {
+        let Some(href)=entry.children().find(|n|n.is_element()&&n.tag_name().name()=="href")
+            .and_then(|n|n.text()) else {continue};
+        // URL::join handles both absolute path and absolute HTTP URL responses.
+        let resolved=url.join(href).map_err(|e|format!("Invalid WebDAV href: {e}"))?;
+        if resolved.scheme()!=url.scheme()||resolved.host_str()!=url.host_str()
+           ||resolved.port_or_known_default()!=url.port_or_known_default() {
+            return Err("WebDAV listing returned another origin".into());
+        }
+        let decoded:Vec<String>=resolved.path_segments().ok_or("Invalid WebDAV href path")?
+            .filter(|s|!s.is_empty())
+            .map(|s|percent_encoding::percent_decode_str(s).decode_utf8().map(|v|v.into_owned()))
+            .collect::<Result<_,_>>().map_err(|_|"Invalid filename encoding")?;
+        let url_components:Vec<String>=url.path_segments().ok_or("Invalid WebDAV folder")?
+            .filter(|s|!s.is_empty())
+            .map(|s|percent_encoding::percent_decode_str(s).decode_utf8().map(|v|v.into_owned()))
+            .collect::<Result<_,_>>().map_err(|_|"Invalid folder encoding")?;
+        if decoded==url_components {continue;}
+        if decoded.len()!=url_components.len()+1 || !decoded.starts_with(&url_components) {
+            return Err(format!("Unexpected WebDAV listing path under {parent}"));
+        }
+        let name=decoded.last().cloned().ok_or("Empty remote filename")?;
+        if name.is_empty() || name=="." || name==".." || name.contains('/') || name.contains('\\') {
+            return Err("Unsafe remote filename".into());
+        }
+        let ok_prop=entry.descendants().find(|n|n.is_element()&&n.tag_name().name()=="propstat"
+            && n.children().any(|child|child.is_element()&&child.tag_name().name()=="status"
+                && child.text().unwrap_or("").contains(" 200 ")));
+        let Some(props)=ok_prop else {return Err("WebDAV listing missing successful properties".into());};
+        let is_dir=props.descendants().any(|n|n.is_element()&&n.tag_name().name()=="collection");
+        let size=props.descendants().find(|n|n.is_element()&&n.tag_name().name()=="getcontentlength")
+            .and_then(|n|n.text()).and_then(|v|v.parse::<u64>().ok());
+        found.push(RemoteItem{name,is_dir,size});
+    }
+    found.sort_by(|a,b|a.name.cmp(&b.name));
+    Ok(found)
+}
+
+fn snapshot_parts(reference: &str) -> Result<Vec<&str>,String> {
+    let components:Vec<&str>=reference.split('/').collect();
+    if components.len()!=7 || components[0]!="switch2"
+        || !crate::discovery::valid_title_id(components[1])
+        || !["account","device","legacy-account"].contains(&components[2])
+        || components[5]!="snapshots"
+        || components.iter().any(|p|p.is_empty()||*p=="."||*p==".."||p.contains('\\')||p.contains('%')) {
+        return Err("Expected snapshot path switch2/TITLE_ID/LAYOUT/PROFILE/DEVICE/snapshots/REVISION".into());
+    }
+    Ok(components)
+}
+
+fn list_subfolders(client: &Client,cfg: &Config,base: &Url,prefix: Vec<String>,remaining: usize,
+    output: &mut Vec<Snapshot>) -> Result<(),String> {
+    if output.len()>10000 {return Err("Too many cloud snapshots".into());}
+    let parts:Vec<&str>=prefix.iter().map(String::as_str).collect();
+    if remaining==0 {
+        let contents=list_collection(client,cfg,base,&parts)?;
+        if contents.iter().any(|item|item.name==".checkpoint-complete"&&!item.is_dir) {
+            output.push(Snapshot{relative:prefix.join("/"),files:contents.iter()
+                .filter(|item|!item.is_dir&&item.name!=".checkpoint-complete").count()});
+        }
+        return Ok(());
+    }
+    for entry in list_collection(client,cfg,base,&parts)? {
+        if !entry.is_dir {continue;}
+        let mut child=prefix.clone();
+        child.push(entry.name);
+        if child.len()==6 && child[5]!="snapshots" {continue;}
+        list_subfolders(client,cfg,base,child,remaining-1,output)?;
+    }
+    Ok(())
+}
+
+pub fn list_snapshots(cfg: &Config,title: &str) -> Result<Vec<Snapshot>,String> {
+    if !crate::discovery::valid_title_id(title) {return Err("Invalid Switch 2 title ID".into());}
+    let client=client()?;
+    let base=root(cfg)?;
+    let mut snapshots=vec![];
+    // Layout, profile, device, snapshots directory, revision = 5 layers.
+    // Constrain the snapshots directory explicitly when descending.
+    list_subfolders(&client,cfg,&base,vec!["switch2".into(),title.to_ascii_uppercase()],5,&mut snapshots)?;
+    snapshots.sort_by(|a,b|b.relative.cmp(&a.relative));
+    Ok(snapshots)
+}
+
+fn download_dir(client:&Client,cfg:&Config,base:&Url,parts:&[String],local:&Path,
+    count:&mut usize,depth:usize) -> Result<(),String> {
+    if depth>20 || *count>50000 {return Err("Cloud snapshot exceeds restore limits".into());}
+    let names:Vec<&str>=parts.iter().map(String::as_str).collect();
+    for entry in list_collection(client,cfg,base,&names)? {
+        if entry.name==".checkpoint-complete" {continue;}
+        let mut path=parts.to_vec();
+        path.push(entry.name.clone());
+        let destination=local.join(&entry.name);
+        if entry.is_dir {
+            fs::create_dir(&destination).map_err(|e|e.to_string())?;
+            download_dir(client,cfg,base,&path,&destination,count,depth+1)?;
+        } else {
+            let names:Vec<&str>=path.iter().map(String::as_str).collect();
+            let url=target(base,&names,false)?;
+            let mut response=authorize(client.get(url),cfg).send()
+                .map_err(|e|format!("WebDAV download: {e}"))?;
+            if !response.status().is_success() {return Err(error_status("download",response.status()));}
+            let mut output=File::create(&destination).map_err(|e|e.to_string())?;
+            let received=io::copy(&mut response,&mut output).map_err(|e|format!("Save download: {e}"))?;
+            if let Some(size)=entry.size {
+                if size!=received {return Err(format!("Download size mismatch for {}",entry.name));}
+            }
+            output.sync_all().map_err(|e|e.to_string())?;
+            *count+=1;
+        }
+    }
+    Ok(())
+}
+
+pub fn download_snapshot(cfg:&Config,reference:&str,staging:&Path) -> Result<usize,String> {
+    let parts=snapshot_parts(reference)?;
+    let client=client()?;
+    let base=root(cfg)?;
+    let entries=list_collection(&client,cfg,&base,&parts)?;
+    let marker=entries.iter().find(|e|e.name==".checkpoint-complete"&&!e.is_dir)
+        .ok_or("Remote snapshot has no completion marker; refusing incomplete backup")?;
+    if marker.size.is_some_and(|size|size>1024) {return Err("Invalid snapshot marker".into());}
+    let mut marker_parts=parts.clone();
+    marker_parts.push(".checkpoint-complete");
+    let mut marker_response=authorize(client.get(target(&base,&marker_parts,false)?),cfg)
+        .send().map_err(|e|e.to_string())?;
+    if !marker_response.status().is_success() {
+        return Err(error_status("read snapshot marker",marker_response.status()));
+    }
+    let mut marker_data=Vec::new();
+    io::Read::take(&mut marker_response,1025).read_to_end(&mut marker_data)
+        .map_err(|e|e.to_string())?;
+    let expected=std::str::from_utf8(&marker_data).map_err(|e|e.to_string())?
+        .trim().strip_prefix("files=").ok_or("Invalid snapshot completion marker")?
+        .parse::<usize>().map_err(|_|"Invalid snapshot file count")?;
+    if expected==0 || expected>50000 {return Err("Snapshot file count outside limits".into());}
+    let mut count=0;
+    let names=parts.iter().map(|s|s.to_string()).collect::<Vec<_>>();
+    download_dir(&client,cfg,&base,&names,staging,&mut count,0)?;
+    if count!=expected {
+        return Err(format!("Snapshot incomplete: expected {expected} files, downloaded {count}"));
+    }
+    Ok(count)
+}

@@ -250,3 +250,72 @@ mod tests {
         assert!(validate(&Config{backend:"rsync".into(),destination:"-bad".into(),username:None,password:None}).is_err());
     }
 }
+
+
+pub fn list_cloud_backups(title: &str) -> Result<Vec<webdav::Snapshot>,String> {
+    let cfg=load()?.ok_or("No backup destination configured")?;
+    if cfg.backend!="webdav" {return Err("Cloud restore currently requires the native WebDAV backend".into());}
+    webdav::list_snapshots(&cfg,title)
+}
+
+pub fn restore_snapshot(reference: &str, target: &Path, confirm: bool) -> Result<String,String> {
+    if !confirm {return Err("Restore requires --confirm-restore and an explicit --to destination".into());}
+    let cfg=load()?.ok_or("No backup destination configured")?;
+    if cfg.backend!="webdav" {return Err("Cloud restore currently requires native WebDAV".into());}
+    if !crate::process_games().is_empty() {
+        return Err("Close Eglantine completely before restoring saves".into());
+    }
+    let segments:Vec<&str>=reference.split('/').collect();
+    if segments.len()!=7 {return Err("Invalid snapshot reference".into());}
+    let title=segments[1];
+    if !discovery::valid_title_id(title) {return Err("Invalid title ID".into());}
+    let expected_path=fs::canonicalize(target).map_err(|e|format!("Save directory must already exist: {e}"))?;
+    if !expected_path.is_dir() {return Err("Restore target must be an existing save directory".into());}
+    if fs::symlink_metadata(target).map_err(|e|e.to_string())?.file_type().is_symlink() {
+        return Err("Refusing to restore through a symlink".into());
+    }
+    let roots=discovery::candidate_roots(&[],&[]);
+    let matching=discovery::discover(&roots,title);
+    if !matching.iter().any(|s|Path::new(&s.path)==expected_path) {
+        return Err(format!("Restore target is not a discovered save directory for title {title}; use --save-dir or ensure Eglantine has created a local save first"));
+    }
+    // Keep staging in the save's parent, ensuring rename stays on one filesystem.
+    let parent=expected_path.parent().ok_or("Restore destination has no parent")?;
+    let name=expected_path.file_name().ok_or("Invalid restore target name")?.to_string_lossy();
+    let nonce=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let prefix=format!(".checkpoint-restore-{name}-{}-{nonce}",std::process::id());
+    let staging=parent.join(format!("{prefix}-staging"));
+    let previous=parent.join(format!("{prefix}-previous"));
+    fs::create_dir(&staging).map_err(|e|format!("Cannot create restore staging: {e}"))?;
+    let downloaded=webdav::download_snapshot(&cfg,reference,&staging);
+    let files=match downloaded {
+        Ok(files)=>files,
+        Err(error)=>{
+            let _=fs::remove_dir_all(&staging);
+            return Err(format!("Restore download failed; local save was not changed: {error}"));
+        }
+    };
+    // Refuse to replace anything containing symlinks; retain the original unchanged.
+    let mut pending=vec![expected_path.clone()];
+    while let Some(folder)=pending.pop() {
+        for entry in fs::read_dir(&folder).map_err(|e|e.to_string())? {
+            let entry=entry.map_err(|e|e.to_string())?;
+            let meta=fs::symlink_metadata(entry.path()).map_err(|e|e.to_string())?;
+            if meta.file_type().is_symlink() {
+                let _=fs::remove_dir_all(&staging);
+                return Err("Original save contains symlinks; refusing restore".into());
+            }
+            if meta.is_dir(){pending.push(entry.path());}
+        }
+    }
+    if let Err(error)=fs::rename(&expected_path,&previous) {
+        let _=fs::remove_dir_all(&staging);
+        return Err(format!("Cannot preserve existing save: {error}"));
+    }
+    if let Err(error)=fs::rename(&staging,&expected_path) {
+        let rollback=fs::rename(&previous,&expected_path);
+        return Err(format!("Cannot install restore: {error}; rollback: {rollback:?}; staging: {}",staging.display()));
+    }
+    Ok(format!("Restored {files} files to {}. Original save preserved at {}",
+        expected_path.display(),previous.display()))
+}

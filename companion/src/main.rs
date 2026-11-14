@@ -162,7 +162,9 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;let mut configure_webdav:Option<(String,String)>=None;let mut test_webdav=false;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;let mut configure_webdav:Option<(String,String)>=None;let mut test_webdav=false;let mut list_backups:Option<String>=None;
+    let mut restore_backup:Option<String>=None;let mut restore_target:Option<PathBuf>=None;
+    let mut confirm_restore=false;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -176,6 +178,10 @@ fn main(){
             "--status-json"=>status_json=true,
             "--backup-once"=>sync_once=true,
             "--test-webdav"=>test_webdav=true,
+            "--list-backups"=>list_backups=args.next(),
+            "--restore-backup"=>restore_backup=args.next(),
+            "--to"=>restore_target=args.next().map(PathBuf::from),
+            "--confirm-restore"=>confirm_restore=true,
             "--configure-webdav"=>{
                 let url=args.next().filter(|s|!s.starts_with("--"));
                 let user=args.next().filter(|s|!s.starts_with("--"));
@@ -201,9 +207,30 @@ fn main(){
                     }
                 }
             },
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--backup-once] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--backup-once] [--list-backups TITLE_ID] [--restore-backup SNAPSHOT_REF --to SAVE_DIR --confirm-restore] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
+    }
+    if let Some(title)=list_backups {
+        match sync::list_cloud_backups(&title) {
+            Ok(snapshots)=>{
+                if snapshots.is_empty(){println!("[Checkpoint] No complete snapshots found for {title}");}
+                else {for snapshot in snapshots {println!("{} ({} top-level files)",snapshot.relative,snapshot.files);}}
+            }
+            Err(error)=>{eprintln!("[Checkpoint] Cloud listing failed: {error}");std::process::exit(1)}
+        }
+        return;
+    }
+    if let Some(reference)=restore_backup {
+        let Some(target)=restore_target else {
+            eprintln!("Usage: --restore-backup SNAPSHOT_REF --to EXISTING_SAVE_DIRECTORY --confirm-restore");
+            std::process::exit(2);
+        };
+        match sync::restore_snapshot(&reference,&target,confirm_restore) {
+            Ok(message)=>println!("[Checkpoint] {message}"),
+            Err(error)=>{eprintln!("[Checkpoint] Restore failed: {error}");std::process::exit(1)}
+        }
+        return;
     }
     if let Some((url,user))=configure_webdav {
         let password=match rpassword::prompt_password("Nextcloud app password: ") {

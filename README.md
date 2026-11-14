@@ -80,3 +80,21 @@ Use the exact WebDAV URL from Nextcloud **Files settings**, adding the `Checkpoi
 Check connectivity: `./target/release/checkpoint-companion --test-webdav`. Run `--backup-once` with Eglantine closed to upload discovered Switch 2 saves directly over HTTPS. The backend creates directories using `MKCOL`, uploads files using `PUT` with overwrite protection, and writes a `.checkpoint-complete` marker only after a snapshot's files upload successfully. Traefik, Nextcloud, and intermediaries must accept WebDAV methods and sufficient request body sizes.
 
 There is still **one global destination**, no per-game configuration, and **no automatic restore or conflict resolution**. Existing rclone and rsync backends remain supported.
+
+## Manual WebDAV restore (experimental)
+
+Close Eglantine and list completed backups for a Switch 2 title:
+
+```sh
+checkpoint-companion --list-backups 04007EF01F8AE000
+```
+
+Copy a full printed reference, such as `switch2/04007EF01F8AE000/legacy-account/PROFILE/DEVICE/snapshots/REVISION`. Restore it into an **existing** save folder that Checkpoint discovers for that same title:
+
+```sh
+checkpoint-companion --restore-backup 'switch2/04007EF01F8AE000/legacy-account/PROFILE/DEVICE/snapshots/REVISION' \
+  --to '/home/USER/.local/share/eglantine/nand/user/save/0000000000000000/PROFILE/04007EF01F8AE000' \
+  --confirm-restore
+```
+
+The companion refuses to restore while Eglantine is running, requires an existing discovered save directory, checks the remote completion marker and file count, downloads into a sibling staging directory, and **renames the entire original local save into a timestamped sibling backup** before replacing it. If installation fails, Checkpoint attempts to roll the original back. Do not delete the preserved folder until you've verified the restored save in-game. Selecting the target explicitly prevents accidental profile mismatches across devices. This still does **not** automatically synchronize or resolve conflicts. Native WebDAV only; existing rsync/rclone backups cannot be restored through this command.
