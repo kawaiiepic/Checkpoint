@@ -164,3 +164,7 @@ Checkpoint now supports both `account` and `legacy-account` save-layout attestat
 ### Process-first game detection (without NUP file handles)
 
 Checkpoint reads Linux `/proc` to discover Eglantine instances and inspects their launch arguments for ROMs. This works directly for Steam ROM Manager launches using `-g /path/to/game.nup`. For a game launched within Eglantine's GUI, a recent boot log may supply the *displayed* title ID, but logs are never used to establish a safe sync state. No `/proc/<pid>/fd` scanning is performed because Eglantine can read the ROM into memory and close the source file. When the emulator remains open without a verified game-stop signal, Checkpoint conservatively pauses sync, including while the GUI library is open. Close Eglantine to sync; distinguishing library-idle from game-active will require a trustworthy emulator IPC or state signal.
+
+### Decky activity console
+
+The Checkpoint page has a rolling 100-entry in-memory console with timestamps and a Clear button. The backend records emulator/game start and exit, local save-change detection, local save inventory, cloud configuration, scheduled sync checks, actual per-title upload/download reports, and conflicts/errors from the Rust companion. An emulator exit is labeled as sync-eligible, **not** proof of a successful backup. No-op syncs are reported as checks, not uploads. The console is cleared on Decky backend restart; backend messages also go to Decky's plugin log. Eglantine identification is process-first, with only recent logs as optional game-name hints.

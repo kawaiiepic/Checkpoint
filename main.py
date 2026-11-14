@@ -2,6 +2,8 @@
 import asyncio
 import json
 import os
+from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 import decky
@@ -28,6 +30,10 @@ class Plugin:
             "save_roots": [], "saves": [], "watched_files": 0, "process_count": 0,
         }
         self.error = None
+        self.events = deque(maxlen=100)
+        self.event_id = 0
+        self.last_sync = None
+        self._record("info", "Checkpoint monitor started")
         self._task = asyncio.create_task(self._poll())
         decky.logger.info("Checkpoint Rust status bridge started")
 
@@ -38,13 +44,35 @@ class Plugin:
         except asyncio.CancelledError:
             pass
 
+    def _record(self, level, message):
+        self.event_id += 1
+        self.events.append({
+            "id": self.event_id,
+            "time": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "level": level,
+            "message": message[:400],
+        })
+        if level == "error":
+            decky.logger.warning("Checkpoint activity: %s", message)
+        else:
+            decky.logger.info("Checkpoint activity: %s", message)
+
     async def get_status(self):
-        return {**self.status, "error": self.error}
+        return {**self.status, "error": self.error, "activity": list(self.events),
+                "last_sync": self.last_sync}
+
+    async def clear_activity(self):
+        self.events.clear()
+        self._record("info", "Console cleared")
+        return True
 
     async def _poll(self):
         last_session = None
         last_signatures = None
         backup_counter = 0
+        last_error = None
+        last_inventory = None
+        last_configured = None
         while True:
             try:
                 binary = next((path for path in BINARIES if path.is_file() and os.access(path, os.X_OK)), None)
@@ -65,20 +93,38 @@ class Plugin:
                 if process.returncode:
                     raise RuntimeError(err.decode(errors="replace").strip() or f"Rust exited {process.returncode}")
                 current = json.loads(out)
-                session = (current.get("running"), current.get("title_id"))
+                session = (bool(current.get("running")), current.get("title_id"))
                 signatures = {save["path"]: save["signature"] for save in current.get("saves", [])}
-                if session != last_session:
-                    if current.get("running") and current.get("title_id"):
-                        await decky.emit("game_detected", {
-                            "game": current.get("game"), "title_id": current.get("title_id")
-                        })
-                    last_signatures = signatures
-                elif last_signatures is not None and signatures != last_signatures and current.get("title_id"):
+                if last_session is None:
+                    self._record("info", "Eglantine running" if session[0] else "Eglantine closed; safe to check sync")
+                elif session != last_session:
+                    if session[0] and not last_session[0]:
+                        self._record("game", "Eglantine launched")
+                    if not session[0] and last_session[0]:
+                        self._record("game", f"Eglantine closed (last title: {last_session[1] or 'unknown'}); sync eligible")
+                    elif session[0] and session[1] != last_session[1]:
+                        self._record("game", f"Game identified: {current.get('game') or 'Unknown'} [{session[1]}]" if session[1] else "Game unidentified; sync paused")
+                if session[0] and session[1] and (last_session is None or session != last_session):
+                    await decky.emit("game_detected", {"game": current.get("game"), "title_id": session[1]})
+                if last_session == session and last_signatures is not None and signatures != last_signatures and session[1]:
+                    changed = sum(last_signatures.get(path) != value for path, value in signatures.items())
+                    self._record("save", f"Local save changed for {session[1]} ({changed} file groups); not yet synced")
                     await decky.emit("save_updated", {
-                        "game": current.get("game"), "title_id": current.get("title_id"),
-                        "changed_count": sum(last_signatures.get(path) != value for path, value in signatures.items())
+                        "game": current.get("game"), "title_id": session[1], "changed_count": changed
                     })
-                    last_signatures = signatures
+                last_signatures = signatures
+                inventory = (current.get("available_titles", 0), current.get("available_saves", 0))
+                if inventory != last_inventory:
+                    self._record("info", f"Local inventory: {inventory[0]} games, {inventory[1]} save directories")
+                    last_inventory = inventory
+                configured = bool(current.get("backup_configured"))
+                if configured != last_configured:
+                    self._record("info", "Cloud destination configured" if configured else "Cloud destination not configured")
+                    last_configured = configured
+                issue = current.get("backup_error")
+                if issue and issue != last_error:
+                    self._record("error", f"Cloud configuration: {issue}")
+                    last_error = issue
                 self.status = current
                 self.error = None
                 # Every ~30 seconds while idle. Rust checks again immediately before copying.
@@ -91,14 +137,30 @@ class Plugin:
                             env=RUST_ENV,
                             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                         )
+                        self._record("sync", "Checking Nextcloud for save changes")
                         try:
-                            _, backup_err = await asyncio.wait_for(backup.communicate(), timeout=90)
+                            backup_out, backup_err = await asyncio.wait_for(backup.communicate(), timeout=90)
                         except asyncio.TimeoutError:
                             backup.kill()
                             await backup.communicate()
-                            raise RuntimeError("Automatic backup timed out")
+                            raise RuntimeError("Automatic sync timed out")
+                        stdout = backup_out.decode(errors="replace")
+                        stderr = backup_err.decode(errors="replace")
+                        # Show only actual Rust sync results, not invented success messages.
+                        for line in (stdout + "\n" + stderr).splitlines():
+                            if not line.startswith("[Checkpoint]"):
+                                continue
+                            if any(word in line for word in (
+                                "Published current cloud save", "Installed missing save from cloud",
+                                "Synced ", "CONFLICT ", "Sync error for ",
+                                "Cloud check failed for ", "Sync:", "Sync completed:",
+                            )):
+                                level = "error" if any(word in line for word in ("CONFLICT", "Sync error", "Cloud check failed")) else "sync"
+                                self._record(level, line.removeprefix("[Checkpoint] ").strip())
+                        self.last_sync = datetime.now().astimezone().isoformat(timespec="seconds")
                         if backup.returncode:
-                            decky.logger.warning("Checkpoint backup: %s", backup_err.decode(errors="replace"))
+                            self._record("error", f"Automatic sync failed (exit code {backup.returncode})")
+                            decky.logger.warning("Checkpoint backup: %s", stderr)
                 else:
                     backup_counter = 0
                 last_session = session
@@ -107,6 +169,9 @@ class Plugin:
             except Exception as exc:
                 self.error = str(exc)
                 decky.logger.warning("Checkpoint Rust bridge: %s", exc)
+                if str(exc) != last_error:
+                    self._record("error", f"Monitor error: {exc}")
+                    last_error = str(exc)
                 last_session = None
                 last_signatures = None
             await asyncio.sleep(POLL_SECONDS)

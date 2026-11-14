@@ -21,9 +21,12 @@ type Status = {
   process_count?: number;
   saves?: { path: string; profile: string; layout: string; file_count: number; last_modified_ms?: number | null }[];
   error?: string | null;
+  last_sync?: string | null;
+  activity?: { id: number; time: string; level: string; message: string }[];
 };
 type Change = { game: string; title_id?: string; changed_count: number };
 const getStatus = callable<[], Status>('get_status');
+const clearActivity = callable<[], boolean>('clear_activity');
 
 function formatSaveTime(ms?: number | null): string {
   if (ms == null || !Number.isFinite(ms)) return 'Unknown';
@@ -68,6 +71,36 @@ function Content() {
         <div>{status?.backup_error ? `Backup configuration error: ${status.backup_error}` : status?.backup_configured ? `Games backed up: ${status.backed_up_games ?? 0}` : 'Backup destination not configured. Set one global destination with --configure-sync.'}</div>
       </PanelSectionRow>
     </PanelSection>
+    <PanelSection title="Activity console">
+      <PanelSectionRow>
+        <div style={{ width: '100%' }}>
+          <div style={{ opacity: 0.75, fontSize: 'small', marginBottom: 8 }}>
+            {status?.last_sync ? `Last sync check: ${new Date(status.last_sync).toLocaleTimeString()}` : 'No automatic sync check yet'}
+          </div>
+          <div style={{
+            maxHeight: 220, overflowY: 'auto', padding: 10,
+            borderRadius: 8, background: '#10151b', color: '#cbd5e1',
+            fontFamily: 'monospace', fontSize: 11, lineHeight: 1.55,
+            overflowWrap: 'anywhere',
+          }}>
+            {status?.activity?.length ? status.activity.slice().reverse().map((entry) =>
+              <div key={entry.id} style={{ marginBottom: 6, color:
+                entry.level === 'error' ? '#fca5a5' :
+                entry.level === 'sync' ? '#86efac' :
+                entry.level === 'game' ? '#93c5fd' :
+                entry.level === 'save' ? '#fcd34d' : '#cbd5e1' }}>
+                <span style={{ opacity: 0.65 }}>[{new Date(entry.time).toLocaleTimeString()}]</span> {entry.message}
+              </div>
+            ) : 'No activity yet'}
+          </div>
+        </div>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => void clearActivity().then(() => refresh()).catch(e => setError(String(e)))}>
+          Clear console
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
     <PanelSection title="Prototype limitations">
       <PanelSectionRow>
         <div>Native WebDAV automatically syncs paired saves while Eglantine is closed. Conflicting saves are not overwritten. First-time pairing may require --sync-adopt TITLE_ID. Legacy rsync/rclone destinations remain backup-only.</div>
@@ -80,7 +113,7 @@ export default definePlugin(() => {
   const listener = addEventListener<[Change]>('save_updated', (change) => {
     toaster.toast({
       title: 'Updated local save detected',
-      body: `${change.game} · ${change.changed_count} file(s) changed. No cloud sync performed.`,
+      body: `${change.game} · ${change.changed_count} file(s) changed. Sync pending.`,
       icon: <FaCloud />,
     });
   });
