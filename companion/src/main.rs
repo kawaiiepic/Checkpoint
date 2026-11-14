@@ -1,4 +1,5 @@
 mod sync;
+mod webdav;
 mod discovery;
 mod status;
 mod titles;

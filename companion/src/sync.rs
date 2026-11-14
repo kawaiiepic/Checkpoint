@@ -1,7 +1,6 @@
-mod webdav;
 //! Global-config, automatic read-only-source backups (NOT two-way synchronization).
 //! Cloud restore deliberately remains disabled pending safe merge/conflict logic.
-use crate::discovery;
+use crate::{discovery, webdav};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet}, env, fs, io,

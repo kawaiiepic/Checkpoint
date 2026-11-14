@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use super::Config;
+use crate::sync::Config;
 
 fn client() -> Result<Client, String> {
     Client::builder()
