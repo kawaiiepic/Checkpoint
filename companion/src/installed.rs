@@ -67,7 +67,7 @@ fn settings(path:&Path)->Result<Library,String>{
                     }
                     continue;
                 }
-                if !kind.is_file() || !entry.path().extension().is_some_and(|e|e.eq_ignore_ascii_case("nup")){continue;}
+                if !kind.is_file() || !entry.path().extension().and_then(|e|e.to_str()).is_some_and(|e|e.eq_ignore_ascii_case("nup")){continue;}
                 if let Ok(Some(info))=nup::inspect(&entry.path()){
                     if info.base_game && discovery::valid_title_id(&info.title_id){
                         titles.insert(info.title_id);
@@ -99,6 +99,7 @@ pub fn missing_account_directory(roots:&[PathBuf],id:&str)->Result<PathBuf,Strin
     let program=u64::from_str_radix(id,16).map_err(|e|e.to_string())? & !0xff;
     for root in roots {
         let account=root.join("account");
+        if !fs::symlink_metadata(&account).is_ok_and(|m|m.is_dir() && !m.file_type().is_symlink()) {continue;}
         if let Ok(profiles)=fs::read_dir(account){
             for profile in profiles.flatten(){
                 let Ok(ty)=profile.file_type() else {continue};
