@@ -519,7 +519,9 @@ pub fn publish_current(cfg:&Config,manifest:&CloudCurrent,previous:Option<&str>)
     request=if let Some(etag)=previous {
         request.header(reqwest::header::IF_MATCH,etag)
     }else{request.header(IF_NONE_MATCH,"*")};
-    let response=request.json(manifest).send().map_err(|e|format!("Publish cloud current: {e}"))?;
+    let payload=serde_json::to_vec(manifest).map_err(|e|e.to_string())?;
+    let response=request.header(reqwest::header::CONTENT_TYPE,"application/json")
+        .body(payload).send().map_err(|e|format!("Publish cloud current: {e}"))?;
     if response.status()==StatusCode::PRECONDITION_FAILED ||
        response.status()==StatusCode::CONFLICT {
         return Err("CONFLICT: Cloud save changed on another device. No data overwritten".into());

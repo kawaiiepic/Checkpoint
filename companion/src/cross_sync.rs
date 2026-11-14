@@ -101,7 +101,7 @@ fn host_id()->String {
     format!("{:x}",hash)[..16].to_string()
 }
 fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
-    id:&str)->Result<(),String>{
+    id:&str,expected_local:&str)->Result<(),String>{
     if !crate::process_games().is_empty(){return Err("Emulator started; refusing restore".into());}
     let parent=source.parent().ok_or("Invalid save parent")?;
     let stem=source.file_name().ok_or("Invalid save name")?.to_string_lossy();
@@ -125,6 +125,10 @@ fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
         return Err("Cloud changed during download; local save untouched".into());
     }
     if !crate::process_games().is_empty(){let _=fs::remove_dir_all(&staged);return Err("Emulator started during download".into());}
+    if collect(source)?.1!=expected_local {
+        let _=fs::remove_dir_all(&staged);
+        return Err("Local save changed during download; refusing to replace it".into());
+    }
     fs::rename(source,&recovery).map_err(|e|format!("Could not preserve original save: {e}"))?;
     if let Err(e)=fs::rename(&staged,source) {
         let rollback=fs::rename(&recovery,source);
@@ -166,7 +170,7 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
             if !adopt {
                 return Err(format!("CONFLICT {id}: local and cloud saves differ; run --sync-adopt {id} once on this device to replace its local save (local recovery copy kept)"));
             }
-            install(cfg,&current,source,id)?;
+            install(cfg,&current,source,id,&local)?;
             state.bases.insert(key,Base{
                 generation:current.manifest.generation,digest:current.manifest.digest
             });
@@ -180,7 +184,7 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
             match (local_changed,remote_changed) {
                 (false,false)=>Ok("unchanged"),
                 (false,true)=>{
-                    install(cfg,&current,source,id)?;
+                    install(cfg,&current,source,id,&local)?;
                     state.bases.insert(key,Base{generation:current.manifest.generation,
                         digest:current.manifest.digest});
                     store_state(state)?;
