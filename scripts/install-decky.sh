@@ -31,7 +31,7 @@ echo "[Checkpoint] Building Rust companion..."
 cargo build --release --manifest-path companion/Cargo.toml
 
 echo "[Checkpoint] Building Decky frontend..."
-pnpm install --frozen-lockfile
+pnpm install --no-frozen-lockfile
 pnpm build
 
 test -s dist/index.js || { echo "Missing frontend bundle dist/index.js" >&2; exit 1; }
