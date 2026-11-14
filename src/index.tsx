@@ -10,6 +10,9 @@ type Status = {
   last_update?: string | null;
   last_game?: string | null;
   watched_files: number;
+  available_saves?: number;
+  available_titles?: number;
+  game_running?: boolean;
   last_modified_ms?: number | null;
   backup_configured?: boolean;
   backed_up_games?: number;
@@ -41,14 +44,15 @@ function Content() {
   return <>
     <PanelSection title="Eglantine">
       <PanelSectionRow>
-        <div>{status?.running ? `Playing: ${status.game ?? 'Unknown game'}` : 'No Eglantine game detected'}</div>
+        <div>{status?.game_running ? `Game active: ${status.game ?? 'Unknown game'}` : status?.running ? 'Eglantine open; no game confirmed running' : 'Eglantine closed; ready to sync'}</div>
       </PanelSectionRow>
       <PanelSectionRow>
-        <div>{status ? `Monitoring ${status.watched_files} save files` : 'Checking...'}</div>
+        <div>{status ? `${status.available_saves ?? 0} local save director${(status.available_saves ?? 0) === 1 ? 'y' : 'ies'} discovered across ${status.available_titles ?? 0} game${(status.available_titles ?? 0) === 1 ? '' : 's'}` : 'Checking...'}</div>
       </PanelSectionRow>
-      <PanelSectionRow><div>{status?.title_id ? `Title ID: ${status.title_id}` : 'Title ID not detected'}</div></PanelSectionRow>
-      <PanelSectionRow><div>Last save modified: {formatSaveTime(status?.last_modified_ms)}</div></PanelSectionRow>
-      <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path} (updated ${formatSaveTime(s.last_modified_ms)})`).join(' | ') : 'No matching save directory found'}</div></PanelSectionRow>
+      {status?.title_id && <PanelSectionRow><div>Title ID: {status.title_id}</div></PanelSectionRow>}
+      {status?.title_id && <PanelSectionRow><div>Monitoring {status.watched_files} files for current title</div></PanelSectionRow>}
+      {status?.title_id && <PanelSectionRow><div>Last save modified: {formatSaveTime(status?.last_modified_ms)}</div></PanelSectionRow>}
+      {status?.title_id && <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path} (updated ${formatSaveTime(s.last_modified_ms)})`).join(' | ') : 'No save directory found for the detected game'}</div></PanelSectionRow>}
       <PanelSectionRow>
         <div style={{ fontSize: 'small', opacity: 0.7 }}>
           {status?.save_roots?.length ? `Save roots: ${status.save_roots.join(', ')}` : 'No Eglantine save directory found. See README.'}

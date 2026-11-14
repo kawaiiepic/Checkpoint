@@ -12,6 +12,8 @@ pub struct Snapshot {
     pub save_roots: Vec<String>,
     pub saves: Vec<SaveLocation>,
     pub watched_files: usize,
+    pub available_saves: usize,
+    pub available_titles: usize,
     pub last_modified_ms: Option<u64>,
     pub backup_configured: bool,
     pub backed_up_games: usize,
@@ -44,6 +46,11 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
     });
     let saves = title_id.as_ref().map(|id|discovery::discover(&roots, id)).unwrap_or_default();
     let watched_files = saves.iter().map(|item|item.file_count).sum();
+    // Idle inventory is independent of the last booted game. It is read-only
+    // and does not establish that a title is installed or eligible for sync.
+    let inventory = crate::sync::entries(&roots);
+    let available_saves = inventory.len();
+    let available_titles = inventory.iter().map(|(id,_)|id).collect::<std::collections::BTreeSet<_>>().len();
     let last_modified_ms = saves.iter().filter_map(|item|item.last_modified_ms).max();
     let (backup_configured, backed_up_games, backup_error) = match crate::sync::backup_status() {
         Ok((configured,count)) => (configured,count,None),
@@ -53,7 +60,7 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
         running: !processes.is_empty(), process_count: processes.len(),
         game_running: crate::activity::game_active_or_unknown(), game, title_id,
         save_roots: roots.iter().map(|r|r.to_string_lossy().into_owned()).collect(),
-        saves, watched_files, last_modified_ms,
+        saves, watched_files, available_saves, available_titles, last_modified_ms,
         backup_configured, backed_up_games, backup_error
     }
 }
