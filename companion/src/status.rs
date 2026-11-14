@@ -26,8 +26,18 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
     let logs = log_override.map(|p| vec![p.clone()])
         .unwrap_or_else(|| crate::log_candidates(&PathBuf::from(
             std::env::var_os("HOME").unwrap_or_default())));
-    let mut boot = None;
-    if !processes.is_empty() {
+    // Steam ROM Manager launches Eglantine with a ROM argument, which we can
+    // identify from /proc without consulting logs. No file handles required.
+    let launched = processes.iter().filter_map(|(_,name)|name.as_deref()).filter_map(|name|{
+        let (title,raw)=name.rsplit_once(" [")?;
+        let id=raw.strip_suffix(']')?;
+        if !discovery::valid_title_id(id){return None;}
+        Some(crate::BootEvent{title_id:id.to_owned(),title:title.to_owned()})
+    }).collect::<Vec<_>>();
+    let mut boot = if launched.len()==1 {launched.into_iter().next()} else {None};
+    // A recent boot log can identify a GUI-launched game for display, but
+    // cannot prove the game is still active.
+    if boot.is_none() && !processes.is_empty() {
         for path in logs {
             let Ok(metadata) = std::fs::metadata(&path) else { continue };
             let Ok(mtime) = metadata.modified() else { continue };

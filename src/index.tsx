@@ -44,7 +44,7 @@ function Content() {
   return <>
     <PanelSection title="Eglantine">
       <PanelSectionRow>
-        <div>{status?.game_running ? `Game active: ${status.game ?? 'Unknown game'}` : status?.running ? 'Eglantine open; no game confirmed running' : 'Eglantine closed; ready to sync'}</div>
+        <div>{status?.game_running ? `Game active: ${status.game ?? 'Unknown game'}` : status?.running ? 'Eglantine running; game state uncertain, sync paused' : 'Eglantine closed; ready to sync'}</div>
       </PanelSectionRow>
       <PanelSectionRow>
         <div>{status ? `${status.available_saves ?? 0} local save director${(status.available_saves ?? 0) === 1 ? 'y' : 'ies'} discovered across ${status.available_titles ?? 0} game${(status.available_titles ?? 0) === 1 ? '' : 's'}` : 'Checking...'}</div>
