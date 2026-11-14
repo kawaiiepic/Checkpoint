@@ -17,19 +17,6 @@ fn is_eglantine_process(proc: &Path, args: &[String], executable: &str, actual: 
     })
 }
 
-fn open_save_count(pid: u32, roots: &[PathBuf]) -> usize {
-    let mut count = 0;
-    let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else { return 0 };
-    for fd in fds.flatten() {
-        let Ok(path) = fs::read_link(fd.path()) else { continue };
-        // "/proc/<pid>/fd" links generally use absolute paths. Strip deleted suffix.
-        let display = path.to_string_lossy();
-        let normalized = Path::new(display.strip_suffix(" (deleted)").unwrap_or(&display));
-        if roots.iter().any(|root| normalized.starts_with(root)) { count += 1; }
-    }
-    count
-}
-
 fn process_games() -> Vec<(u32,Option<String>)> {
     let mut games=Vec::new();
     if let Ok(procs)=fs::read_dir("/proc") {
@@ -97,7 +84,7 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=180u64;let mut desktop=false;let mut once=false;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -106,7 +93,7 @@ fn main(){
             "--active-seconds"=>active=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--idle-seconds"=>idle=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--notify"=>desktop=true,"--once"=>once=true,
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--active-seconds 30] [--idle-seconds 180] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--active-seconds 30] [--idle-seconds 30] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -140,8 +127,7 @@ fn main(){
                 }
             }
         }
-        let open_count: usize = games.iter().map(|(pid, _)| open_save_count(*pid, &roots)).sum();
-        println!("[Checkpoint] {} Eglantine process(es), {} save files; {} currently open by Eglantine",games.len(),current.len(),open_count);
+        println!("[Checkpoint] {} Eglantine process(es), {} save files",games.len(),current.len());
         old_games=Some(games.clone());old_files=Some(current);
         if let Some(path)=&remote{
             match Command::new("rclone").args(["lsf","--recursive","--files-only","--format","pst",path]).output(){
