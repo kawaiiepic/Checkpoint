@@ -177,8 +177,13 @@ fn attest_legacy_layout(
     cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,local_digest:&str,
     current:webdav::CurrentResponse,
 )->Result<webdav::CurrentResponse,String>{
-    if current.manifest.save_layout.is_some() || save.layout!="account" ||
-       current.manifest.digest!=local_digest {
+    if current.manifest.save_layout.is_some(){return Ok(current);}
+    if save.layout!="account" {
+        eprintln!("[Checkpoint] Legacy cloud metadata for {id} not upgraded: local save layout is '{}' (requires 'account'); local path: {}",save.layout,save.path);
+        return Ok(current);
+    }
+    if current.manifest.digest!=local_digest {
+        eprintln!("[Checkpoint] Legacy cloud metadata for {id} not upgraded: local save contents differ from cloud; no metadata change made");
         return Ok(current);
     }
     let mut updated=current.manifest.clone();
