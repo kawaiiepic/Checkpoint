@@ -13,6 +13,20 @@ cargo build --release
 
 The companion detects Eglantine AppImage processes and reads recently modified Eglantine boot logs for Switch 2 title IDs. It discovers save locations using Eglantine's verified legacy and current save layouts (see below). Nothing is uploaded, downloaded or modified.
 
+## Install / update the Decky Loader plugin on Bazzite
+
+From the Checkpoint repository on the **Steam Deck** (not another Linux machine), with Decky Loader already installed:
+
+```sh
+git pull
+pnpm install
+pnpm run install:decky
+```
+
+The installer builds the Rust companion and Rollup frontend, validates required files, copies `dist/`, `bin/checkpoint-companion`, `main.py`, `plugin.json`, and `package.json` to `/home/deck/homebrew/plugins/Checkpoint`, then restarts `plugin_loader.service`. Run the same command to update the plugin after a code change. `DECK_HOME` can override the home directory for a nonstandard installation. Rust, pnpm, sudo, and Node.js must be installed.
+
+**`SyntaxError: Unexpected token 'export'`**: Checkpoint uses `@decky/api` and `@decky/rollup`, which emit a modern ES module at `dist/index.js`. Current Decky Loader dynamically imports this file, but legacy Decky Loader builds evaluate the bundle as a plain script, causing that exact syntax error. Update/reinstall Decky Loader itself to a version that supports ESM plugins, then rerun `pnpm run install:decky`. Do **not** remove `export` from the built module; that breaks modern Decky Loader. If the error persists on the latest loader, inspect the loader console and `~/homebrew/logs/Checkpoint/`.
+
 ## Decky
 
 Build the Rust binary for the Steam Deck (Linux x86_64), place it at `bin/checkpoint-companion` in the plugin directory, then build the frontend:

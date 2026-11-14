@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "rollup -c",
-    "watch": "rollup -c -w"
+    "watch": "rollup -c -w",
+    "install:decky": "bash scripts/install-decky.sh"
   },
   "dependencies": {
     "@decky/api": "^1.1.3",
