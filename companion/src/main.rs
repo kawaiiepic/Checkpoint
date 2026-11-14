@@ -184,7 +184,7 @@ fn main(){
         for name in ["eglantine","Eglantine","eden","Eden"]{roots.push(xdg.join(name).join("nand/user/save"))}
     }
     let home=PathBuf::from(env::var_os("HOME").expect("HOME not set"));
-    let logs=log_override.map(|p|vec![p]).unwrap_or_else(||log_candidates(&home));
+    let logs=log_override.as_ref().map(|p|vec![p.clone()]).unwrap_or_else(||log_candidates(&home));
     if status_json {
         let snapshot=status::snapshot(&roots, log_override.as_ref());
         println!("{}",serde_json::to_string(&snapshot).expect("serialize snapshot"));
