@@ -144,6 +144,8 @@ pub fn test(cfg: &Config) -> Result<(),String> {
 }
 
 pub fn upload(cfg: &Config, source: &Path, revision: &str) -> Result<(),String> {
+    // The configured Checkpoint folder may have been deleted since setup.
+    test(cfg)?;
     let client=client()?;
     let base=root(cfg)?;
     let segments:Vec<&str>=revision.split('/').collect();
@@ -490,6 +492,9 @@ fn validate_current(current: &CloudCurrent,title: &str) -> Result<(),String> {
 }
 pub fn upload_generation(cfg:&Config, source:&Path, current:&CloudCurrent) -> Result<(),String> {
     validate_current(current,&current.title)?;
+    // WebDAV MKCOL requires the parent collection to exist (otherwise HTTP 409).
+    // In particular, a user may have deleted the configured /Checkpoint folder.
+    test(cfg)?;
     let client=client()?;
     let base=root(cfg)?;
     let prefix=["switch2",current.title.as_str(),"data",current.generation.as_str()];
@@ -512,6 +517,7 @@ pub fn upload_generation(cfg:&Config, source:&Path, current:&CloudCurrent) -> Re
 }
 pub fn publish_current(cfg:&Config,manifest:&CloudCurrent,previous:Option<&str>) -> Result<(),String> {
     validate_current(manifest,&manifest.title)?;
+    test(cfg)?;
     let client=client()?;
     let root=root(cfg)?;
     let parent=["switch2",manifest.title.as_str()];
