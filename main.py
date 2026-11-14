@@ -13,6 +13,13 @@ BINARIES = [
     Path("/usr/local/bin/checkpoint-companion"),
 ]
 POLL_SECONDS = 5
+# Decky services may execute as root; inspect the Steam Deck user's data.
+DECK_HOME = Path("/home/deck")
+RUST_ENV = {**os.environ, "HOME": str(DECK_HOME)}
+RUST_ENV["XDG_DATA_HOME"] = str(DECK_HOME / ".local/share")
+RUST_ENV["XDG_CONFIG_HOME"] = str(DECK_HOME / ".config")
+RUST_ENV["XDG_STATE_HOME"] = str(DECK_HOME / ".local/state")
+RUST_ENV["XDG_CACHE_HOME"] = str(DECK_HOME / ".cache")
 
 class Plugin:
     async def _main(self):
@@ -45,6 +52,7 @@ class Plugin:
                     raise FileNotFoundError("Build the Rust companion and copy it to bin/checkpoint-companion")
                 process = await asyncio.create_subprocess_exec(
                     str(binary), "--status-json",
+                    env=RUST_ENV,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -80,6 +88,7 @@ class Plugin:
                         backup_counter = 0
                         backup = await asyncio.create_subprocess_exec(
                             str(binary), "--backup-once",
+                            env=RUST_ENV,
                             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                         )
                         try:
