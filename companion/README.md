@@ -25,3 +25,7 @@ Checkpoint recognizes directly launched `.nup` files as well as `.xci`, `.nsp`, 
 ### Detecting the active game through Eglantine logs
 
 Checkpoint can now read the newest `BootGame: Booting game: TITLE_ID | TITLE |` event while Eglantine is running, so a game opened inside the emulator GUI can be identified without a ROM command-line argument. The title ID is recorded alongside Eglantine's reported title, for example `04007EF01F8AE000 | FEFW ROM (64-bit)`. It scans common `~/.local/share/{eglantine,Eglantine,eden,Eden}/log/{eden_log,eglantine_log}.txt` paths and supports `--log-file /path/to/eden_log.txt` for portable installations. It ignores logs that were not modified recently on first discovery, to reduce stale-game attribution. This is detection only; it does not associate the title ID with a save directory or transfer files. A 30-second polling interval still applies.
+
+### Reading .nup metadata
+
+For a directly launched `.nup`, Checkpoint reads and validates the NUP v1 TOC and metadata in read-only mode. The embedded game title (TLV 0x0005) and 64-bit title ID are displayed if present; missing titles fall back to the filename. Archive parsing is bounded and does not decompress ROM contents. Invalid or unsupported archives fall back to their filenames without stopping monitoring. NUP metadata is a hint for game identification, not yet a verified association with a particular save directory. See the [NUP v1 specification](https://github.com/a55uka/nup/blob/744fb7e30ce3ace787f1839ee3e7f8a010e36c04/SPEC.md).

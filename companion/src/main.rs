@@ -1,3 +1,4 @@
+mod nup;
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
 type Files = BTreeMap<PathBuf, (u64,u128)>;
 
@@ -20,6 +21,13 @@ fn is_eglantine_process(proc: &Path, args: &[String], executable: &str, actual: 
 fn game_from_launch_path(value: &str) -> Option<String> {
     let path = Path::new(value);
     let ext = path.extension().and_then(OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+    if ext == "nup" {
+        if let Ok(Some(info)) = nup::inspect(path) {
+            let fallback = path.file_stem().map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Unknown game".to_owned());
+            return Some(format!("{} [{}]", info.title.unwrap_or(fallback), info.title_id));
+        }
+    }
     if ["xci", "nsp", "nca", "nro", "nup"].contains(&ext.as_str()) {
         return path.file_stem().map(|name| name.to_string_lossy().into_owned());
     }

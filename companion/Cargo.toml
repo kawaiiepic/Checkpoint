@@ -6,3 +6,4 @@ description = "Terminal-only Eglantine save watcher"
 license = "MIT"
 
 [dependencies]
+sha2 = "0.10"
