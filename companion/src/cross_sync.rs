@@ -142,8 +142,8 @@ fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
 /// A single verified account profile is required; no game data is cached otherwise.
 fn install_missing(cfg:&sync::Config,current:&webdav::CurrentResponse,
     destination:&Path,id:&str)->Result<(),String>{
-    if current.manifest.save_layout.as_deref()!=Some("account") {
-        return Err("Cloud save predates account-layout metadata. Run the updated Checkpoint --sync-once on the original PC with its matching local account save, then retry here".into());
+    if !matches!(current.manifest.save_layout.as_deref(),Some("account" | "legacy-account")) {
+        return Err("Cloud save has no verified supported account layout. Run updated Checkpoint --sync-once on the source PC first".into());
     }
     if destination.exists() {return Err("Local destination appeared during sync".into());}
     let parent=destination.parent().ok_or("Missing save parent")?;
@@ -178,8 +178,8 @@ fn attest_legacy_layout(
     current:webdav::CurrentResponse,
 )->Result<webdav::CurrentResponse,String>{
     if current.manifest.save_layout.is_some(){return Ok(current);}
-    if save.layout!="account" {
-        eprintln!("[Checkpoint] Legacy cloud metadata for {id} not upgraded: local save layout is '{}' (requires 'account'); local path: {}",save.layout,save.path);
+    if !matches!(save.layout.as_str(),"account" | "legacy-account") {
+        eprintln!("[Checkpoint] Legacy cloud metadata for {id} not upgraded: unsupported local save layout '{}'; local path: {}",save.layout,save.path);
         return Ok(current);
     }
     if current.manifest.digest!=local_digest {
@@ -187,14 +187,14 @@ fn attest_legacy_layout(
         return Ok(current);
     }
     let mut updated=current.manifest.clone();
-    updated.save_layout=Some("account".into());
+    updated.save_layout=Some(save.layout.clone());
     webdav::publish_current(cfg,&updated,Some(&current.etag))?;
     println!("[Checkpoint] Verified and upgraded legacy account-save metadata for {id}");
     let published=webdav::get_current(cfg,id)?
         .ok_or("Cloud pointer disappeared after metadata update")?;
     if published.manifest.generation!=updated.generation ||
        published.manifest.digest!=updated.digest ||
-       published.manifest.save_layout.as_deref()!=Some("account"){
+       published.manifest.save_layout.as_deref()!=Some(save.layout.as_str()){
         return Err("Cloud pointer changed after metadata update; retry sync".into());
     }
     Ok(published)
@@ -321,7 +321,7 @@ pub fn run(adopt:Option<&str>)->Result<Summary,String>{
         if adopt.is_some()&&adopt!=Some(title.as_str()){continue;}
         match webdav::get_current(&cfg,title) {
             Ok(Some(current))=>{
-                match installed::missing_account_directory(&library,title)
+                match installed::missing_account_directory(&library,title,current.manifest.save_layout.as_deref().unwrap_or(""))
                     .and_then(|path|{
                         install_missing(&cfg,&current,&path,title)?;
                         let key=format!("{}|{}|{}",cfg.destination,title,path.display());

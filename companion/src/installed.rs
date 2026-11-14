@@ -128,7 +128,7 @@ fn selected_account_id(nand:&Path,index:usize)->Result<String,String>{
     let low=u64::from_le_bytes(selected[..8].try_into().map_err(|_|"Bad UUID low half")?);
     Ok(format!("{high:016X}{low:016X}"))
 }
-pub fn missing_account_directory(library:&Library,id:&str)->Result<PathBuf,String>{
+pub fn missing_account_directory(library:&Library,id:&str,layout:&str)->Result<PathBuf,String>{
     if !discovery::valid_title_id(id){return Err("Invalid title ID".into());}
     let index=library.current_user.ok_or("Missing [System] current_user in qt-config.ini")?;
     if library.save_roots.len()!=1 {
@@ -137,11 +137,26 @@ pub fn missing_account_directory(library:&Library,id:&str)->Result<PathBuf,Strin
     let root=&library.save_roots[0];
     let nand=root.parent().and_then(Path::parent).ok_or("Invalid NAND root")?;
     let id_key=selected_account_id(nand,index)?;
-    let account=root.join("account");
-    let profile=account.join(id_key);
-    let program=u64::from_str_radix(id,16).map_err(|e|e.to_string())? & !0xff;
-    let game=profile.join(format!("{program:016X}"));
-    let destination=game.join("0");
+    // Restore under the source emulator's verified layout, remapping only
+    // the user UUID to this device's selected account.
+    let (account,profile,game,destination)=match layout {
+        "account"=>{
+            let account=root.join("account");
+            let profile=account.join(&id_key);
+            let program=u64::from_str_radix(id,16).map_err(|e|e.to_string())? & !0xff;
+            let game=profile.join(format!("{program:016X}"));
+            let destination=game.join("0");
+            (account,profile,game,destination)
+        },
+        "legacy-account"=>{
+            let account=root.join("0000000000000000");
+            let profile=account.join(&id_key);
+            let game=profile.join(id);
+            let destination=game.clone();
+            (account,profile,game,destination)
+        },
+        _=>return Err(format!("Unsupported cloud layout '{layout}' for missing save")),
+    };
     for p in [root,&account,&profile,&game,&destination] {
         if let Ok(meta)=fs::symlink_metadata(p) {
             if meta.file_type().is_symlink() || !meta.is_dir() {
