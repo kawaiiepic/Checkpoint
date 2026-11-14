@@ -460,14 +460,34 @@ pub fn get_current(cfg: &Config, title: &str) -> Result<Option<CurrentResponse>,
     if !crate::discovery::valid_title_id(title) {return Err("Invalid Switch 2 title".into());}
     let client=client()?;
     let base=root(cfg)?;
+    // An intermediary may gzip JSON and rewrite the HTTP ETag (for example
+    // to `"...-gzip"`). That transformed validator fails Nextcloud's
+    // If-Match check even when the file itself has not changed.
     let response=authorize(client.get(target(&base,&current_path(title),false)?)
-        .header("Cache-Control","no-cache"),cfg).send()
+        .header("Cache-Control","no-cache")
+        .header(reqwest::header::ACCEPT_ENCODING,"identity"),cfg).send()
         .map_err(|e|format!("WebDAV current save: {e}"))?;
     if response.status()==StatusCode::NOT_FOUND {return Ok(None);}
     if !response.status().is_success() {return Err(error_status("read current save",response.status()));}
-    let etag=response.headers().get(reqwest::header::ETAG)
+    // Prefer Nextcloud's own unmodified validator to the HTTP ETag, which
+    // reverse proxies/compression middleware can transform in transit.
+    let headers=response.headers();
+    let raw= headers.get("OC-ETag")
+        .or_else(||headers.get(reqwest::header::ETAG))
         .ok_or("Nextcloud returned no ETag; safe concurrent sync unavailable")?
-        .to_str().map_err(|e|e.to_string())?.to_owned();
+        .to_str().map_err(|e|e.to_string())?.trim();
+    let etag=if raw.starts_with("W/") {
+        return Err("Cloud returned a weak ETag; safe conditional writes unavailable".into());
+    } else if raw.starts_with('"') && raw.ends_with('"') {
+        // Apache mod_deflate sometimes appends -gzip/-br to the ETag
+        // rather than changing the underlying Nextcloud file validator.
+        let inner=&raw[1..raw.len()-1];
+        let clean=inner.strip_suffix("-gzip").or_else(||inner.strip_suffix("-br")).unwrap_or(inner);
+        format!("\"{clean}\"")
+    } else {
+        // Some Nextcloud versions emit an unquoted OC-ETag.
+        format!("\"{raw}\"")
+    };
     let bytes=response.bytes().map_err(|e|e.to_string())?;
     if bytes.len()>8*1024*1024 {return Err("Cloud manifest too large".into());}
     let manifest:CloudCurrent=serde_json::from_slice(&bytes).map_err(|e|format!("Invalid cloud manifest: {e}"))?;
@@ -533,7 +553,7 @@ pub fn publish_current(cfg:&Config,manifest:&CloudCurrent,previous:Option<&str>)
         .body(payload).send().map_err(|e|format!("Publish cloud current: {e}"))?;
     if response.status()==StatusCode::PRECONDITION_FAILED ||
        response.status()==StatusCode::CONFLICT {
-        return Err("CONFLICT: Cloud save changed on another device. No data overwritten".into());
+        return Err(format!("CONFLICT: Cloud conditional PUT rejected (HTTP {}). No data overwritten. The current.json ETag may have changed or been transformed by a proxy; check Nextcloud/WebDAV ETag headers",response.status()));
     }
     if !response.status().is_success() {return Err(error_status("publish current",response.status()));}
     Ok(())
