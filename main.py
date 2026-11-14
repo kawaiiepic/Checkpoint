@@ -73,6 +73,7 @@ class Plugin:
         last_error = None
         last_inventory = None
         last_configured = None
+        sync_was_blocked = False
         while True:
             try:
                 binary = next((path for path in BINARIES if path.is_file() and os.access(path, os.X_OK)), None)
@@ -128,13 +129,28 @@ class Plugin:
                 if issue and issue != last_error:
                     self._record("error", f"Cloud configuration: {issue}")
                     last_error = issue
+                elif not issue:
+                    last_error = None
                 self.status = current
                 self.error = None
+                if current.get("game_running", current.get("running", True)):
+                    if not sync_was_blocked:
+                        self._record("info", "Cloud sync paused while Eglantine is running")
+                    sync_was_blocked = True
+                elif sync_was_blocked:
+                    backup_counter = 5
+                    self._record("sync", "Eglantine closed; starting immediate sync check")
+                    sync_was_blocked = False
                 # Every ~30 seconds while idle. Rust checks again immediately before copying.
                 if not current.get("game_running", current.get("running", True)):
                     backup_counter += 1
                     if backup_counter >= 6:
                         backup_counter = 0
+                        if not current.get("backup_configured"):
+                            self._record("error", "Sync skipped: no cloud destination configured on this Deck. Run checkpoint-companion --configure-webdav to configure it.")
+                            last_session = session
+                            await asyncio.sleep(POLL_SECONDS)
+                            continue
                         backup = await asyncio.create_subprocess_exec(
                             str(binary), "--backup-once",
                             env=RUST_ENV,
@@ -162,8 +178,17 @@ class Plugin:
                                 self._record(level, line.removeprefix("[Checkpoint] ").strip())
                         self.last_sync = datetime.now().astimezone().isoformat(timespec="seconds")
                         if backup.returncode:
-                            self._record("error", f"Automatic sync failed (exit code {backup.returncode})")
+                            reason = next((line.removeprefix("[Checkpoint] ").strip()
+                                           for line in stderr.splitlines() if line.strip()), "No error details returned")
+                            self._record("error", f"Automatic sync failed (exit code {backup.returncode}): {reason}")
                             decky.logger.warning("Checkpoint backup: %s", stderr)
+                        elif "Sync: 0 uploads, 0 downloads, 0 conflicts, 0 errors" in stdout:
+                            if (current.get("available_saves") or 0) > 0 and (current.get("backed_up_games") or 0) == 0:
+                                self._record("info", "Sync checked: no transfers. Local saves exist but no paired games. Confirm matching NUP is installed and listed in Eglantine game directories.")
+                            else:
+                                self._record("sync", "Sync complete: no changes to upload or download")
+                        elif not any(line.startswith("[Checkpoint] Sync:") for line in stdout.splitlines()):
+                            self._record("info", "Sync command completed without a native WebDAV transfer summary; check configured backend")
                 else:
                     backup_counter = 0
                 last_session = session
