@@ -206,7 +206,15 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
                     }
                     Ok("uploaded")
                 }
-                (true,true)=>Err(format!("CONFLICT {id}: both local and cloud saves changed; no overwrite performed"))
+                (true,true) if adopt=>{
+                    // Explicit user choice: cloud wins, with original save retained locally.
+                    install(cfg,&current,source,id,&local)?;
+                    state.bases.insert(key,Base{generation:current.manifest.generation,
+                        digest:current.manifest.digest});
+                    store_state(state)?;
+                    Ok("downloaded")
+                }
+                (true,true)=>Err(format!("CONFLICT {id}: both local and cloud saves changed; no overwrite performed. To preserve local progress, stop here; to choose cloud and keep a local recovery copy, run --sync-adopt {id}"))
             }
         }
         (Some(_),None)=>Err(format!("CONFLICT {id}: cloud save missing after previous sync; refusing to overwrite or recreate it"))
