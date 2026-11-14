@@ -5,6 +5,7 @@ mod discovery;
 mod status;
 mod titles;
 mod nup;
+mod installed;
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
 type Files = BTreeMap<PathBuf, (u64,u128)>;
 

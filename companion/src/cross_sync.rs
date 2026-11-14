@@ -1,6 +1,6 @@
 //! Conflict-safe sync of a single cloud "current" save per game.
 //! Local recovery copies survive replaces; old per-device snapshot folders are untouched.
-use crate::{discovery, sync, webdav};
+use crate::{discovery, installed, sync, webdav};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -137,6 +137,36 @@ fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
     println!("[Checkpoint] Synced {id} from cloud; previous local save at {}",recovery.display());
     Ok(())
 }
+
+/// Stage and validate a cloud save for an installed title with no local save yet.
+/// A single verified account profile is required; no game data is cached otherwise.
+fn install_missing(cfg:&sync::Config,current:&webdav::CurrentResponse,
+    destination:&Path,id:&str)->Result<(),String>{
+    if current.manifest.save_layout.as_deref()!=Some("account") {
+        return Err("Cloud save does not declare account layout; cannot safely create a missing save directory. Reupload this game with an updated Checkpoint first".into());
+    }
+    if destination.exists() {return Err("Local destination appeared during sync".into());}
+    let parent=destination.parent().ok_or("Missing save parent")?;
+    // Parent is created only after verifying that the target belongs to one known profile.
+    fs::create_dir_all(parent).map_err(|e|e.to_string())?;
+    let staged=parent.join(format!(".checkpoint-new-{}",unique_generation()));
+    fs::create_dir(&staged).map_err(|e|e.to_string())?;
+    let outcome=(||{
+        webdav::download_current(cfg,&current.manifest,&staged)?;
+        let (_,digest)=collect(&staged)?;
+        if digest!=current.manifest.digest{return Err("Cloud content hash mismatch".into());}
+        if !crate::process_games().is_empty(){return Err("Emulator started during sync".into());}
+        if webdav::get_current(cfg,id)?.as_ref().map(|x|x.etag.as_str())!=Some(current.etag.as_str()) {
+            return Err("Cloud changed during download".into());
+        }
+        if destination.exists(){return Err("Save destination appeared during download".into());}
+        fs::rename(&staged,destination).map_err(|e|format!("Install missing save: {e}"))?;
+        Ok(())
+    })();
+    if outcome.is_err(){let _=fs::remove_dir_all(&staged);}
+    outcome
+}
+
 fn save_key(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation)->String{
     format!("{}|{}|{}",cfg.destination,id,save.path)
 }
@@ -152,7 +182,7 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
             // First machine seeds the empty cloud. Conditional creation protects races.
             let manifest=webdav::CloudCurrent{
                 version:1,title:id.into(),generation:unique_generation(),digest:local.clone(),
-                writer:host_id(),files
+                writer:host_id(),save_layout:Some(save.layout.clone()),files
             };
             webdav::upload_generation(cfg,source,&manifest)?;
             if collect(source)?.1!=local{return Err("Save changed during upload; cloud pointer not published".into());}
@@ -193,7 +223,7 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
                 (true,false)=>{
                     let manifest=webdav::CloudCurrent{
                         version:1,title:id.into(),generation:unique_generation(),
-                        digest:local.clone(),writer:host_id(),files
+                        digest:local.clone(),writer:host_id(),save_layout:Some(save.layout.clone()),files
                     };
                     webdav::upload_generation(cfg,source,&manifest)?;
                     if collect(source)?.1!=local{return Err("Local save changed during upload; cloud pointer unchanged".into());}
@@ -238,12 +268,52 @@ pub fn run(adopt:Option<&str>)->Result<Summary,String>{
     if !crate::process_games().is_empty(){return Err("Eglantine is running; sync only runs while closed".into());}
     let _guard=lock()?;
     let mut state=read_state()?;
+    // This allowlist is mandatory, even for existing saves. Extracted games
+    // and uninstalled games must never be silently uploaded or downloaded.
+    let library=installed::load()?;
     let mut groups:BTreeMap<String,Vec<discovery::SaveLocation>>=BTreeMap::new();
-    for (id,save) in sync::local_entries() {groups.entry(id).or_default().push(save);}
+    for (id,save) in sync::local_entries() {
+        if library.titles.contains(&id){groups.entry(id).or_default().push(save);}
+    }
     let mut summary=Summary::default();
     if let Some(title)=adopt {
         if !discovery::valid_title_id(title) {return Err("Invalid title ID".into());}
         if !groups.contains_key(title) {return Err("No local save found for that title. Create an in-game save first".into());}
+    }
+    // Only installed NUP titles are considered. Never download saves for
+    // cloud-only or uninstalled games.
+    for title in &library.titles {
+        if groups.contains_key(title){continue;}
+        if adopt.is_some()&&adopt!=Some(title.as_str()){continue;}
+        match webdav::get_current(&cfg,title) {
+            Ok(Some(current))=>{
+                let roots=if library.save_roots.is_empty(){
+                    discovery::candidate_roots(&[],&[])
+                }else{library.save_roots.clone()};
+                match installed::missing_account_directory(&roots,title)
+                    .and_then(|path|{
+                        install_missing(&cfg,&current,&path,title)?;
+                        let key=format!("{}|{}|{}",cfg.destination,title,path.display());
+                        state.bases.insert(key,Base{
+                            generation:current.manifest.generation.clone(),
+                            digest:current.manifest.digest.clone()
+                        });
+                        store_state(&state)?;
+                        Ok(())
+                    }){
+                    Ok(())=>{
+                        summary.downloaded+=1;
+                        println!("[Checkpoint] Installed missing save from cloud for {title}");
+                    },
+                    Err(e)=>{
+                        summary.conflicts+=1;
+                        eprintln!("[Checkpoint] CONFLICT {title}: {e}");
+                    }
+                }
+            }
+            Ok(None)=>{},
+            Err(e)=>{summary.errors+=1;eprintln!("[Checkpoint] Cloud check failed for {title}: {e}");}
+        }
     }
     for (title,saves) in groups {
         if adopt.is_some()&&adopt!=Some(title.as_str()){continue;}
@@ -277,6 +347,10 @@ pub fn reseed(title: &str) -> Result<(), String> {
     }
     let _guard=lock()?;
     let mut state=read_state()?;
+    let library=installed::load()?;
+    if !library.titles.contains(title) {
+        return Err("Game is not installed as a verified NUP; reseed is disabled".into());
+    }
     let saves=sync::local_entries().into_iter()
         .filter(|(id,_)|id==title).map(|(_,save)|save).collect::<Vec<_>>();
     if saves.len()!=1 {

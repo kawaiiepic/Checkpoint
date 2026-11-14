@@ -446,6 +446,8 @@ pub struct CloudCurrent {
     pub generation: String,
     pub digest: String,
     pub writer: String,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub save_layout: Option<String>,
     pub files: Vec<CloudFile>,
 }
 pub struct CurrentResponse {

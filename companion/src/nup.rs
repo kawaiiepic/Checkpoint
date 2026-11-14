@@ -10,6 +10,7 @@ use std::{
 pub struct NupInfo {
     pub title_id: String,
     pub title: Option<String>,
+    pub base_game: bool,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -90,7 +91,7 @@ pub fn inspect(path: &Path) -> io::Result<Option<NupInfo>> {
             }
             found
         };
-        let info = NupInfo {title_id: format!("{title_id:016X}"), title};
+        let info = NupInfo {title_id: format!("{title_id:016X}"), title, base_game:kind==0};
         // Prefer a base game, then an update; do not select DLC.
         if kind == 0 { return Ok(Some(info)); }
         if kind == 1 && selected.is_none() { selected = Some((kind, info)); }
