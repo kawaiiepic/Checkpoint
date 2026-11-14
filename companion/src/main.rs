@@ -68,6 +68,47 @@ fn process_games() -> Vec<(u32,Option<String>)> {
     }
     games.sort_by_key(|g|g.0);games
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BootEvent {
+    title_id: String,
+    title: String,
+}
+fn parse_boot_event(line: &str) -> Option<BootEvent> {
+    // Eglantine: BootGame: Booting game: 04007EF01F8AE000 | FEFW ROM (64-bit) |
+    let data = line.split("BootGame: Booting game: ").nth(1)?;
+    let mut fields = data.split('|').map(str::trim);
+    let id = fields.next()?;
+    let title = fields.next()?;
+    if id.len() != 16 || !id.chars().all(|c| c.is_ascii_hexdigit()) || title.is_empty() {
+        return None;
+    }
+    Some(BootEvent { title_id: id.to_ascii_uppercase(), title: title.to_owned() })
+}
+fn most_recent_boot(log: &Path) -> Option<BootEvent> {
+    // Read only the last 256 KiB to avoid loading large logs into memory.
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(log).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(256 * 1024);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines().rev().find_map(parse_boot_event)
+}
+fn log_candidates(home: &Path) -> Vec<PathBuf> {
+    let xdg = env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    let mut paths = Vec::new();
+    for dir in ["eglantine", "Eglantine", "eden", "Eden"] {
+        for filename in ["eden_log.txt", "eglantine_log.txt"] {
+            paths.push(xdg.join(dir).join("log").join(filename));
+        }
+    }
+    paths
+}
+
 fn session_label(games: &[(u32, Option<String>)]) -> String {
     let mut titles: Vec<&str> = games.iter().filter_map(|(_, name)| name.as_deref()).collect();
     titles.sort_unstable();
@@ -108,16 +149,17 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
             "--save-dir"=>roots.push(PathBuf::from(args.next().expect("--save-dir requires a path"))),
             "--remote"=>remote=Some(args.next().expect("--remote requires a path")),
+            "--log-file"=>log_override=Some(PathBuf::from(args.next().expect("--log-file requires a path"))),
             "--active-seconds"=>active=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--idle-seconds"=>idle=args.next().expect("Missing seconds").parse().expect("Invalid seconds"),
             "--notify"=>desktop=true,"--once"=>once=true,
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--active-seconds 30] [--idle-seconds 30] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -128,28 +170,65 @@ fn main(){
         let xdg=env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or(home.join(".local/share"));
         for name in ["eglantine","Eglantine","eden","Eden"]{roots.push(xdg.join(name).join("nand/user/save"))}
     }
+    let home=PathBuf::from(env::var_os("HOME").expect("HOME not set"));
+    let logs=log_override.map(|p|vec![p]).unwrap_or_else(||log_candidates(&home));
     println!("Checkpoint companion · read-only; no uploads or downloads");
     for p in &roots{println!("  watching {}",p.display())}
     let mut old_games:Option<Vec<(u32,Option<String>)>>=None;
     let mut old_files:Option<Files>=None;let mut old_remote:Option<Vec<u8>>=None;
     let mut pending:Option<(Instant,usize)>=None;
+    let mut last_boot:Option<BootEvent>=None;
+    let mut last_log_version:Option<(PathBuf,u64,std::time::SystemTime)>=None;
     loop{
         let games=process_games();let current=files(&roots);
+        // Avoid attributing a boot line from a previous session to a new one.
+        // Process detection is poll-based; only recently modified logs qualify on first sight.
+        let mut observed_boot = None;
+        if !games.is_empty() {
+            for log in &logs {
+                let Ok(meta)=fs::metadata(log) else {continue};
+                let Ok(modified)=meta.modified() else {continue};
+                let age=std::time::SystemTime::now().duration_since(modified).unwrap_or_default();
+                let version=(log.clone(), meta.len(),modified);
+                let changed_log=last_log_version.as_ref()!=Some(&version);
+                let recently_written=age < Duration::from_secs(120);
+                if changed_log && recently_written {
+                    observed_boot=most_recent_boot(log);
+                }
+                last_log_version=Some(version);
+                if observed_boot.is_some() {break}
+            }
+        } else {
+            last_boot=None;
+        }
+        let boot_changed=observed_boot.as_ref().is_some_and(|event|last_boot.as_ref()!=Some(event));
+        if let Some(event)=observed_boot {last_boot=Some(event);}
+
         let session_changed=old_games.as_ref().map_or(true,|old|*old!=games);
         if session_changed{
             if games.is_empty(){if old_games.as_ref().is_some_and(|x|!x.is_empty()){notice("Eglantine exited",desktop)}}
-            else{notice(&format!("Eglantine detected: {}", session_label(&games)),desktop)}
+            else{
+                let game=last_boot.as_ref().map(|event|format!("{} [{}]",event.title,event.title_id))
+                    .unwrap_or_else(||session_label(&games));
+                notice(&format!("Eglantine detected: {game}"),desktop)
+            }
             pending=None;
-        }else if let Some(old)=&old_files{
+        }else if boot_changed {
+            if let Some(event)=&last_boot { notice(&format!("Game boot detected: {} [{}]",event.title,event.title_id),desktop); }
+        }
+        if !session_changed {
+          if let Some(old)=&old_files{
             let n=changed(old,&current);
             if n>0{pending=Some((Instant::now(),pending.map_or(n,|(_,v)|n.max(v))))}
             else if let Some((since,count))=pending{
                 if since.elapsed()>=Duration::from_secs(6){
-                    let game=session_label(&games);
+                    let game=last_boot.as_ref().map(|event|format!("{} [{}]",event.title,event.title_id))
+                        .unwrap_or_else(||session_label(&games));
                     notice(&format!("Local save updated ({count} changed files; {game}). No sync performed."),desktop);
                     pending=None
                 }
             }
+        }
         }
         println!("[Checkpoint] {} Eglantine process(es), {} save files",games.len(),current.len());
         old_games=Some(games.clone());old_files=Some(current);
@@ -176,6 +255,13 @@ mod tests{
         assert_eq!(session_label(&[(1,None),(2,None)]), "game unknown (emulator active)");
         assert_eq!(session_label(&[(1,None),(2,Some("Example".into()))]), "Example");
         assert_eq!(session_label(&[(1,Some("Example".into())),(2,Some("Example".into()))]), "Example");
+    }
+    #[test]fn parses_eglantine_boot_log(){
+        let line="[   4.375378] Frontend <Info> yuzu/main_window.cpp:2160:BootGame: Booting game: 04007EF01F8AE000 | FEFW ROM (64-bit) |";
+        assert_eq!(parse_boot_event(line),Some(BootEvent{
+            title_id:"04007EF01F8AE000".into(),title:"FEFW ROM (64-bit)".into()
+        }));
+        assert_eq!(parse_boot_event("BootGame: Eglantine starting..."),None);
     }
     #[test]fn nup_rom_detection(){
         assert_eq!(game_from_launch_path("/games/Fire Emblem.nup").as_deref(), Some("Fire Emblem"));

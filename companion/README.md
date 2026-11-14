@@ -21,3 +21,7 @@ The companion detects Eglantine AppImages using executable paths, command lines,
 ### Extracted games and .nup files
 
 Checkpoint recognizes directly launched `.nup` files as well as `.xci`, `.nsp`, `.nca`, and `.nro`. It also recognizes extracted games supplied as an `exefs` directory or `exefs/main` file, provided that `exefs/main` exists on disk. For layouts with a numeric intermediate directory (such as `131072/exefs`), it uses the enclosing directory name as a provisional game label. Detection is based on launch arguments; it is not a verified title-ID lookup or save-folder association.
+
+### Detecting the active game through Eglantine logs
+
+Checkpoint can now read the newest `BootGame: Booting game: TITLE_ID | TITLE |` event while Eglantine is running, so a game opened inside the emulator GUI can be identified without a ROM command-line argument. The title ID is recorded alongside Eglantine's reported title, for example `04007EF01F8AE000 | FEFW ROM (64-bit)`. It scans common `~/.local/share/{eglantine,Eglantine,eden,Eden}/log/{eden_log,eglantine_log}.txt` paths and supports `--log-file /path/to/eden_log.txt` for portable installations. It ignores logs that were not modified recently on first discovery, to reduce stale-game attribution. This is detection only; it does not associate the title ID with a save directory or transfer files. A 30-second polling interval still applies.
