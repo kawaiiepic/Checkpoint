@@ -129,10 +129,17 @@ fn put_file(client: &Client, cfg: &Config, url: Url, path: &Path) -> Result<(),S
 pub fn test(cfg: &Config) -> Result<(),String> {
     let client=client()?;
     let url=root(cfg)?;
-    let response=authorize(client.request(method(b"PROPFIND"),url)
+    let response=authorize(client.request(method(b"PROPFIND"),url.clone())
         .header("Depth","0"),cfg).send().map_err(|err|format!("WebDAV connection: {err}"))?;
-    if response.status() == StatusCode::MULTI_STATUS {Ok(())}
-    else {Err(error_status("connection test",response.status()))}
+    match response.status() {
+        StatusCode::MULTI_STATUS => Ok(()),
+        StatusCode::NOT_FOUND => {
+            // Only create the final configured collection, never parent account paths.
+            // For Nextcloud, /remote.php/dav/files/USER/ must already exist.
+            ensure_folder(&client,cfg,url)
+        }
+        status => Err(error_status("connection test",status))
+    }
 }
 
 pub fn upload(cfg: &Config, source: &Path, revision: &str) -> Result<(),String> {
