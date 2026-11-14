@@ -23,10 +23,12 @@ type Status = {
   saves?: { path: string; profile: string; layout: string; file_count: number; last_modified_ms?: number | null }[];
   error?: string | null;
   last_sync?: string | null;
+  last_scan?: string | null;
   activity?: { id: number; time: string; level: string; message: string }[];
 };
 type Change = { game: string; title_id?: string; changed_count: number };
 const getStatus = callable<[], Status>('get_status');
+const refreshDetection = callable<[], Status>('refresh_detection');
 const clearActivity = callable<[], boolean>('clear_activity');
 
 function formatSaveTime(ms?: number | null): string {
@@ -37,7 +39,17 @@ function formatSaveTime(ms?: number | null): string {
 function Content() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const refresh = () => getStatus().then((result) => { setStatus(result); setError(''); }).catch((e) => setError(String(e)));
+  const rescan = async () => {
+    setRefreshing(true);
+    try {
+      const result = await refreshDetection();
+      setStatus(result);
+      setError(result.error ?? '');
+    } catch (e) { setError(String(e)); }
+    finally { setRefreshing(false); }
+  };
 
   useEffect(() => {
     void refresh();
@@ -63,7 +75,9 @@ function Content() {
         </div>
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" onClick={() => void refresh()}>Refresh detection</ButtonItem>
+        <ButtonItem layout="below" disabled={refreshing} onClick={() => void rescan()}>
+          {refreshing ? 'Scanning Eglantine...' : 'Refresh detection'}
+        </ButtonItem>
       </PanelSectionRow>
       {(error || status?.error) && <PanelSectionRow><div>{error || status?.error}</div></PanelSectionRow>}
     </PanelSection>
@@ -76,7 +90,7 @@ function Content() {
       <PanelSectionRow>
         <div style={{ width: '100%' }}>
           <div style={{ opacity: 0.75, fontSize: 'small', marginBottom: 8 }}>
-            {status?.last_sync ? `Last sync check: ${new Date(status.last_sync).toLocaleTimeString()}` : 'No automatic sync check yet'}
+            {status?.last_scan ? `Last monitor scan: ${new Date(status.last_scan).toLocaleTimeString()}` : 'Monitor scan pending'} {' · '} {status?.last_sync ? `Last sync check: ${new Date(status.last_sync).toLocaleTimeString()}` : 'No automatic sync check yet'}
           </div>
           <div style={{
             maxHeight: 220, overflowY: 'auto', padding: 10,
@@ -118,6 +132,9 @@ export default definePlugin(() => {
       icon: <FaCloud />,
     });
   });
+  const syncListener = addEventListener<[{ kind: string; title: string; body: string }]>("sync_notification", (event) => {
+    toaster.toast({title: event.title, body: event.body, icon: <FaCloud />});
+  });
   const gameListener = addEventListener<[{ game: string; title_id: string }]>("game_detected", (event) => {
     toaster.toast({title: "Eglantine game detected", body: `${event.game} [${event.title_id}]`, icon: <FaGamepad />});
   });
@@ -126,6 +143,6 @@ export default definePlugin(() => {
     titleView: <div className={staticClasses.Title}>Checkpoint</div>,
     content: <Content />,
     icon: <FaGamepad />,
-    onDismount() { removeEventListener('save_updated', listener); removeEventListener("game_detected", gameListener); },
+    onDismount() { removeEventListener('save_updated', listener); removeEventListener("game_detected", gameListener); removeEventListener("sync_notification", syncListener); },
   };
 });

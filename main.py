@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,8 @@ class Plugin:
         self.events = deque(maxlen=100)
         self.event_id = 0
         self.last_sync = None
+        self.last_scan = None
+        self._scan_lock = asyncio.Lock()
         self._record("info", "Checkpoint monitor started")
         self._task = asyncio.create_task(self._poll())
         decky.logger.info("Checkpoint Rust status bridge started")
@@ -59,7 +62,46 @@ class Plugin:
 
     async def get_status(self):
         return {**self.status, "error": self.error, "activity": list(self.events),
-                "last_sync": self.last_sync}
+                "last_sync": self.last_sync, "last_scan": self.last_scan}
+
+    async def _read_monitor(self):
+        """Run the real Rust detector; never merely replay cached status."""
+        async with self._scan_lock:
+            binary = next((p for p in BINARIES if p.is_file() and os.access(p, os.X_OK)), None)
+            if binary is None:
+                raise FileNotFoundError("Build and install bin/checkpoint-companion")
+            proc = await asyncio.create_subprocess_exec(
+                str(binary), "--status-json", env=RUST_ENV,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=12)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise RuntimeError("Rust status scan timed out")
+            if proc.returncode:
+                raise RuntimeError(err.decode(errors="replace").strip() or f"Rust exited {proc.returncode}")
+            result = json.loads(out)
+            self.last_scan = datetime.now().astimezone().isoformat(timespec="seconds")
+            return result
+
+    async def refresh_detection(self):
+        self._record("info", "Manual detection scan requested")
+        try:
+            current = await self._read_monitor()
+            self.status = current
+            self.error = None
+            self._record("info", "Rust scan: {} Eglantine processes, {} local games, {} save directories, title={}, source={}".format(
+                current.get("process_count", 0), current.get("available_titles", 0),
+                current.get("available_saves", 0), current.get("title_id") or "none",
+                current.get("detection_source") or "none"
+            ))
+            self._record("info", "Save roots: " + (", ".join(current.get("save_roots") or []) or "none"))
+        except Exception as exc:
+            self.error = str(exc)
+            self._record("error", f"Manual detection failed: {exc}")
+        return await self.get_status()
 
     async def clear_activity(self):
         self.events.clear()
@@ -74,26 +116,16 @@ class Plugin:
         last_inventory = None
         last_configured = None
         sync_was_blocked = False
+        tick = 0
         while True:
             try:
-                binary = next((path for path in BINARIES if path.is_file() and os.access(path, os.X_OK)), None)
-                if binary is None:
-                    raise FileNotFoundError("Build the Rust companion and copy it to bin/checkpoint-companion")
-                process = await asyncio.create_subprocess_exec(
-                    str(binary), "--status-json",
-                    env=RUST_ENV,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                try:
-                    out, err = await asyncio.wait_for(process.communicate(), timeout=12)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.communicate()
-                    raise RuntimeError("Rust status scan timed out")
-                if process.returncode:
-                    raise RuntimeError(err.decode(errors="replace").strip() or f"Rust exited {process.returncode}")
-                current = json.loads(out)
+                current = await self._read_monitor()
+                binary = next(path for path in BINARIES if path.is_file() and os.access(path, os.X_OK))
+                tick += 1
+                if tick % 12 == 0:
+                    self._record("info", "Monitor alive: {} Eglantine processes, {} local games, {} save directories".format(
+                        current.get("process_count", 0), current.get("available_titles", 0),
+                        current.get("available_saves", 0)))
                 session = (bool(current.get("running")), current.get("title_id"))
                 signatures = {save["path"]: save["signature"] for save in current.get("saves", [])}
                 if last_session is None:
@@ -176,12 +208,30 @@ class Plugin:
                             )):
                                 level = "error" if any(word in line for word in ("CONFLICT", "Sync error", "Cloud check failed")) else "sync"
                                 self._record(level, line.removeprefix("[Checkpoint] ").strip())
+                        totals = re.search(r"Sync: (\d+) uploads, (\d+) downloads, (\d+) conflicts, (\d+) errors", stdout)
+                        if totals:
+                            uploads, downloads, conflicts, errors = (int(n) for n in totals.groups())
+                            if uploads or downloads:
+                                await decky.emit("sync_notification", {
+                                    "kind": "success", "title": "Checkpoint cloud sync",
+                                    "body": f"{uploads} save(s) uploaded, {downloads} downloaded",
+                                })
+                            if conflicts or errors:
+                                await decky.emit("sync_notification", {
+                                    "kind": "error", "title": "Checkpoint needs attention",
+                                    "body": f"{conflicts} conflict(s), {errors} error(s). See activity console.",
+                                })
                         self.last_sync = datetime.now().astimezone().isoformat(timespec="seconds")
                         if backup.returncode:
                             reason = next((line.removeprefix("[Checkpoint] ").strip()
                                            for line in stderr.splitlines() if line.strip()), "No error details returned")
                             self._record("error", f"Automatic sync failed (exit code {backup.returncode}): {reason}")
                             decky.logger.warning("Checkpoint backup: %s", stderr)
+                            if not totals or (int(totals.group(3)) + int(totals.group(4)) == 0):
+                                await decky.emit("sync_notification", {
+                                    "kind": "error", "title": "Checkpoint sync failed",
+                                    "body": reason[:180],
+                                })
                         elif "Sync: 0 uploads, 0 downloads, 0 conflicts, 0 errors" in stdout:
                             if (current.get("available_saves") or 0) > 0 and (current.get("backed_up_games") or 0) == 0:
                                 self._record("info", "Sync checked: no transfers. Local saves exist but no paired games. Confirm matching NUP is installed and listed in Eglantine game directories.")
