@@ -13,6 +13,7 @@ type Status = {
   available_saves?: number;
   available_titles?: number;
   game_running?: boolean;
+  detection_source?: string | null;
   last_modified_ms?: number | null;
   backup_configured?: boolean;
   backed_up_games?: number;
@@ -52,7 +53,7 @@ function Content() {
       <PanelSectionRow>
         <div>{status ? `${status.available_saves ?? 0} local save director${(status.available_saves ?? 0) === 1 ? 'y' : 'ies'} discovered across ${status.available_titles ?? 0} game${(status.available_titles ?? 0) === 1 ? '' : 's'}` : 'Checking...'}</div>
       </PanelSectionRow>
-      {status?.title_id && <PanelSectionRow><div>Title ID: {status.title_id}</div></PanelSectionRow>}
+      {status?.title_id && <PanelSectionRow><div>Title ID: {status.title_id} ({status.detection_source === "process-args" ? "launch arguments" : status.detection_source === "recent-boot-log" ? "boot log hint" : "detected"})</div></PanelSectionRow>}
       {status?.title_id && <PanelSectionRow><div>Monitoring {status.watched_files} files for current title</div></PanelSectionRow>}
       {status?.title_id && <PanelSectionRow><div>Last save modified: {formatSaveTime(status?.last_modified_ms)}</div></PanelSectionRow>}
       {status?.title_id && <PanelSectionRow><div>{status?.saves?.length ? status.saves.map((s) => `${s.layout} · ${s.profile}: ${s.path} (updated ${formatSaveTime(s.last_modified_ms)})`).join(' | ') : 'No save directory found for the detected game'}</div></PanelSectionRow>}

@@ -8,6 +8,7 @@ pub struct Snapshot {
     pub process_count: usize,
     pub game_running: bool,
     pub game: Option<String>,
+    pub detection_source: Option<String>,
     pub title_id: Option<String>,
     pub save_roots: Vec<String>,
     pub saves: Vec<SaveLocation>,
@@ -35,6 +36,7 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
         Some(crate::BootEvent{title_id:id.to_owned(),title:title.to_owned()})
     }).collect::<Vec<_>>();
     let mut boot = if launched.len()==1 {launched.into_iter().next()} else {None};
+    let mut detection_source=boot.as_ref().map(|_|"process-args".to_owned());
     // A recent boot log can identify a GUI-launched game for display, but
     // cannot prove the game is still active.
     if boot.is_none() && !processes.is_empty() {
@@ -46,6 +48,7 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
             }
             if let Some(event) = crate::most_recent_boot(&path) {
                 boot = Some(event);
+                detection_source=Some("recent-boot-log".to_owned());
                 break;
             }
         }
@@ -69,6 +72,7 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
     Snapshot {
         running: !processes.is_empty(), process_count: processes.len(),
         game_running: crate::activity::game_active_or_unknown(), game, title_id,
+        detection_source,
         save_roots: roots.iter().map(|r|r.to_string_lossy().into_owned()).collect(),
         saves, watched_files, available_saves, available_titles, last_modified_ms,
         backup_configured, backed_up_games, backup_error

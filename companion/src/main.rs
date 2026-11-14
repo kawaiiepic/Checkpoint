@@ -13,16 +13,19 @@ type Files = BTreeMap<PathBuf, (u64,u128)>;
 fn is_eglantine_process(proc: &Path, args: &[String], executable: &str, actual: &str) -> bool {
     // AppImage launches can report AppRun or a bundled binary as argv[0].
     if executable.contains("eglantine") || actual.contains("eglantine")
-        || executable == "eden-cli" || actual == "eden-cli" { return true; }
+        || ["eden", "eden-qt", "eden-cli"].contains(&executable)
+        || ["eden", "eden-qt", "eden-cli"].contains(&actual) { return true; }
     let appimage_arg = args.iter().any(|arg| {
         let lower = arg.to_ascii_lowercase();
-        lower.contains("eglantine") && (lower.ends_with(".appimage") || lower.contains("/eglantine"))
+        (lower.contains("eglantine") || lower.contains("eden"))
+            && lower.ends_with(".appimage")
     });
     if appimage_arg { return true; }
     let Ok(data) = fs::read(proc.join("environ")) else { return false };
     data.split(|byte| *byte == 0).any(|entry| {
         entry.starts_with(b"APPIMAGE=")
-            && String::from_utf8_lossy(entry).to_ascii_lowercase().contains("eglantine")
+            && {let value=String::from_utf8_lossy(entry).to_ascii_lowercase();
+                value.contains("eglantine") || value.contains("eden")}
     })
 }
 

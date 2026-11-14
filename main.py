@@ -97,15 +97,18 @@ class Plugin:
                 signatures = {save["path"]: save["signature"] for save in current.get("saves", [])}
                 if last_session is None:
                     self._record("info", "Eglantine running" if session[0] else "Eglantine closed; safe to check sync")
-                elif session != last_session:
-                    if session[0] and not last_session[0]:
-                        self._record("game", "Eglantine launched")
-                    if not session[0] and last_session[0]:
-                        self._record("game", f"Eglantine closed (last title: {last_session[1] or 'unknown'}); sync eligible")
-                    elif session[0] and session[1] != last_session[1]:
-                        self._record("game", f"Game identified: {current.get('game') or 'Unknown'} [{session[1]}]" if session[1] else "Game unidentified; sync paused")
-                if session[0] and session[1] and (last_session is None or session != last_session):
-                    await decky.emit("game_detected", {"game": current.get("game"), "title_id": session[1]})
+                elif session[0] and not last_session[0]:
+                    self._record("game", "Eglantine process launched")
+                elif not session[0] and last_session[0]:
+                    self._record("game", f"Eglantine exited (last detected title: {last_session[1] or 'unknown'}); sync eligible")
+                if session[0] and session[1] and (last_session is None or session[1] != last_session[1] or not last_session[0]):
+                    source = current.get("detection_source") or "unknown source"
+                    self._record("game", f"Game opened/detected: {current.get('game') or 'Unknown'} [{session[1]}] (via {source})")
+                    await decky.emit("game_detected", {
+                        "game": current.get("game"), "title_id": session[1]
+                    })
+                elif session[0] and last_session is not None and session[1] is None and last_session[1] is not None:
+                    self._record("info", "Previously identified game is no longer detectable; Eglantine still open, sync paused")
                 if last_session == session and last_signatures is not None and signatures != last_signatures and session[1]:
                     changed = sum(last_signatures.get(path) != value for path, value in signatures.items())
                     self._record("save", f"Local save changed for {session[1]} ({changed} file groups); not yet synced")
