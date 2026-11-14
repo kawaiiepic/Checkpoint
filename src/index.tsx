@@ -58,7 +58,7 @@ function Content() {
     </PanelSection>
     <PanelSection title="Prototype limitations">
       <PanelSectionRow>
-        <div>Read-only local save notifications. No syncing or Steam library row injection yet.</div>
+        <div>Automatic idle backups when a global rsync/rclone destination is configured. Cloud restore and conflicts are not implemented yet.</div>
       </PanelSectionRow>
     </PanelSection>
   </>;

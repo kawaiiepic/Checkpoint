@@ -37,6 +37,7 @@ class Plugin:
     async def _poll(self):
         last_session = None
         last_signatures = None
+        backup_counter = 0
         while True:
             try:
                 binary = next((path for path in BINARIES if path.is_file() and os.access(path, os.X_OK)), None)
@@ -72,6 +73,25 @@ class Plugin:
                     last_signatures = signatures
                 self.status = current
                 self.error = None
+                # Every ~30 seconds while idle. Rust checks again immediately before copying.
+                if not current.get("running"):
+                    backup_counter += 1
+                    if backup_counter >= 6:
+                        backup_counter = 0
+                        backup = await asyncio.create_subprocess_exec(
+                            str(binary), "--backup-once",
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                        )
+                        try:
+                            _, backup_err = await asyncio.wait_for(backup.communicate(), timeout=90)
+                        except asyncio.TimeoutError:
+                            backup.kill()
+                            await backup.communicate()
+                            raise RuntimeError("Automatic backup timed out")
+                        if backup.returncode:
+                            decky.logger.warning("Checkpoint backup: %s", backup_err.decode(errors="replace"))
+                else:
+                    backup_counter = 0
                 last_session = session
             except asyncio.CancelledError:
                 raise

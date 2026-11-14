@@ -39,3 +39,7 @@ The companion uses **only** the [Switchbrew Switch 2 Games table](https://switch
 `--status-json` prints a single JSON snapshot for Decky. Both apps now use the same Rust process, log, and directory discovery. The only supported title-ID save layouts are those defined by Eglantine's own `savedata_factory.cpp`; there is no write/sync feature.
 
 Save discovery reports `last_modified_ms` for each profile's save directory and an aggregate latest timestamp in `--status-json`. These are filesystem modification times of regular files (excluding Eglantine's `.yuzu_save_size` bookkeeping), not guaranteed in-game save timestamps. The Decky UI formats them in local time; terminal mode prints Unix milliseconds. These timestamps are informational and must not be used alone for cloud-conflict decisions.
+
+### Global automatic backups
+
+Use `--configure-sync rclone remote:Checkpoint` for WebDAV (rclone remote preconfigured), or `--configure-sync rsync server:/backups/Checkpoint` for rsync over SSH. All games are discovered automatically by title ID/profile from Eglantine's known layouts, with immutable per-device snapshot paths. `--backup-once` uploads only if Eglantine is inactive. Standard watch mode and the Decky bridge automatically attempt idle backups. This is a one-way backup feature, not automatic two-way synchronization or restore. No per-game settings.

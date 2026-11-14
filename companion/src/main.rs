@@ -1,3 +1,4 @@
+mod sync;
 mod discovery;
 mod status;
 mod titles;
@@ -160,7 +161,7 @@ fn notice(message:&str,desktop:bool){
     if desktop {let _=Command::new("notify-send").args(["Checkpoint",message]).status();}
 }
 fn main(){
-    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;
+    let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -172,9 +173,22 @@ fn main(){
             "--notify"=>desktop=true,"--once"=>once=true,
             "--refresh-titles"=>refresh_titles=true,
             "--status-json"=>status_json=true,
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--notify] [--once]");return},
+            "--backup-once"=>sync_once=true,
+            "--configure-sync"=>configure_sync=Some((args.next().expect("Backend required"),args.next().expect("Destination required"))),
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--backup-once] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
+    }
+    if let Some((backend,destination))=configure_sync {
+        if let Err(e)=sync::configure(&backend,&destination) {eprintln!("Config error: {e}");std::process::exit(2)}
+        println!("[Checkpoint] Global backup destination saved");return;
+    }
+    if sync_once {
+        match sync::backup_idle() {
+            Ok((uploaded,failed))=>{println!("[Checkpoint] Backup: {uploaded} snapshots uploaded, {failed} failed");if failed>0{std::process::exit(1)}},
+            Err(e)=>{eprintln!("[Checkpoint] Backup: {e}");std::process::exit(1)},
+        }
+        return;
     }
     if active==0||idle==0{eprintln!("Polling intervals must be greater than zero");std::process::exit(2)}
     if let Some(extra)=env::var_os("EGLANTINE_SAVE_DIRS"){roots.extend(env::split_paths(&extra))}
@@ -270,6 +284,11 @@ fn main(){
                 },
                 Ok(out)=>eprintln!("[Checkpoint] rclone error: {}",String::from_utf8_lossy(&out.stderr)),
                 Err(e)=>eprintln!("[Checkpoint] could not run rclone: {e}"),
+            }
+        }
+        if games.is_empty() {
+            if let Err(err)=sync::backup_idle() {
+                eprintln!("[Checkpoint] Automatic backup: {err}");
             }
         }
         if once{break}

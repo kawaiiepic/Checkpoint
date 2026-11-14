@@ -47,3 +47,21 @@ If Eglantine's log is not in a default location, use `--log-file /path/to/eden_l
 - Unrecognized Eglantine sessions may show no title ID or save match.
 - Steam library inline status injection is not yet implemented; notifications appear through Decky's toaster.
 - Source hasn't been validated with a full Rust build in this environment.
+
+## Automatic cloud backups (experimental)
+
+Configure **one global destination** for all games. No individual game settings are needed. The Rust companion automatically discovers all installed Switch 2 saves and stores independent snapshots under `switch2/<title-id>/<layout>/<profile-id>/<machine-id>/snapshots/<timestamp>-<signature>`.
+
+For WebDAV, first configure an rclone WebDAV remote using `rclone config`, then run:
+
+```sh
+checkpoint-companion --configure-sync rclone 'mywebdav:Checkpoint'
+```
+
+For rsync over SSH, configure SSH authentication and run:
+
+```sh
+checkpoint-companion --configure-sync rsync 'myserver:/backups/Checkpoint'
+```
+
+One global file is stored at `~/.config/checkpoint/config.json` (or `$CHECKPOINT_CONFIG`). `--backup-once` invokes a safe idle-only backup. Normal terminal monitoring attempts backups while Eglantine is stopped; Decky invokes the same Rust command about every 30 seconds while idle. Source saves are never deleted, and remote snapshot paths are never reused intentionally. This feature **backs up** saves; it does NOT yet download/restore to another device, merge concurrent changes or resolve profile identities between devices. Remote storage grows with snapshots until retention support is introduced. Requires `rclone` or `rsync` installed and authenticated. Check available storage before using it. Avoid running concurrent Checkpoint instances with the same global configuration.
