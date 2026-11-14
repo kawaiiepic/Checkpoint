@@ -17,3 +17,7 @@ The source has not been compiled on a Rust-equipped machine in this environment.
 ### AppImage process detection
 
 The companion detects Eglantine AppImages using executable paths, command lines, or the `APPIMAGE` process environment when available. It does not inspect open file handles. Launching an individual title inside the emulator GUI may still show an unknown ROM.
+
+### Extracted games and .nup files
+
+Checkpoint recognizes directly launched `.nup` files as well as `.xci`, `.nsp`, `.nca`, and `.nro`. It also recognizes extracted games supplied as an `exefs` directory or `exefs/main` file, provided that `exefs/main` exists on disk. For layouts with a numeric intermediate directory (such as `131072/exefs`), it uses the enclosing directory name as a provisional game label. Detection is based on launch arguments; it is not a verified title-ID lookup or save-folder association.

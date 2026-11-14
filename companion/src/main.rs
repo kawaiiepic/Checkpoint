@@ -17,6 +17,30 @@ fn is_eglantine_process(proc: &Path, args: &[String], executable: &str, actual: 
     })
 }
 
+fn game_from_launch_path(value: &str) -> Option<String> {
+    let path = Path::new(value);
+    let ext = path.extension().and_then(OsStr::to_str).unwrap_or("").to_ascii_lowercase();
+    if ["xci", "nsp", "nca", "nro", "nup"].contains(&ext.as_str()) {
+        return path.file_stem().map(|name| name.to_string_lossy().into_owned());
+    }
+    // Support extracted games passed as .../exefs or .../exefs/main.
+    let exefs = if path.file_name() == Some(OsStr::new("exefs")) {
+        Some(path)
+    } else if path.file_name() == Some(OsStr::new("main"))
+        && path.parent().and_then(Path::file_name) == Some(OsStr::new("exefs")) {
+        path.parent()
+    } else { None };
+    let exefs = exefs?;
+    if !exefs.join("main").is_file() { return None; }
+    let container = exefs.parent()?;
+    // Extracted Switch 2 layouts may have a numeric container such as 131072.
+    let name_path = if container.file_name().and_then(OsStr::to_str)
+        .is_some_and(|name| name.chars().all(|c| c.is_ascii_digit())) {
+        container.parent().unwrap_or(container)
+    } else { container };
+    name_path.file_name().map(|name| name.to_string_lossy().into_owned())
+}
+
 fn process_games() -> Vec<(u32,Option<String>)> {
     let mut games=Vec::new();
     if let Ok(procs)=fs::read_dir("/proc") {
@@ -33,9 +57,9 @@ fn process_games() -> Vec<(u32,Option<String>)> {
                     else if let Some(value)=arg.strip_prefix("--game="){Some(value)}
                     else {Some(arg.as_str())};
                 if let Some(path)=path {
-                    let ext=Path::new(path).extension().and_then(OsStr::to_str).unwrap_or("").to_lowercase();
-                    if ["xci","nsp","nca","nro"].contains(&ext.as_str()){
-                        game=Path::new(path).file_stem().map(|s|s.to_string_lossy().into_owned());break
+                    if let Some(name) = game_from_launch_path(path) {
+                        game = Some(name);
+                        break;
                     }
                 }
             }
@@ -152,6 +176,10 @@ mod tests{
         assert_eq!(session_label(&[(1,None),(2,None)]), "game unknown (emulator active)");
         assert_eq!(session_label(&[(1,None),(2,Some("Example".into()))]), "Example");
         assert_eq!(session_label(&[(1,Some("Example".into())),(2,Some("Example".into()))]), "Example");
+    }
+    #[test]fn nup_rom_detection(){
+        assert_eq!(game_from_launch_path("/games/Fire Emblem.nup").as_deref(), Some("Fire Emblem"));
+        assert_eq!(game_from_launch_path("/games/Game.xci").as_deref(), Some("Game"));
     }
     #[test]fn change_count(){let mut a=Files::new();a.insert(PathBuf::from("save"),(2,1));let mut b=a.clone();assert_eq!(changed(&a,&b),0);b.insert(PathBuf::from("next"),(2,1));assert_eq!(changed(&a,&b),1);}
 }
