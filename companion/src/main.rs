@@ -1,6 +1,35 @@
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
 type Files = BTreeMap<PathBuf, (u64,u128)>;
 
+fn is_eglantine_process(proc: &Path, args: &[String], executable: &str, actual: &str) -> bool {
+    // AppImage launches can report AppRun or a bundled binary as argv[0].
+    if executable.contains("eglantine") || actual.contains("eglantine")
+        || executable == "eden-cli" || actual == "eden-cli" { return true; }
+    let appimage_arg = args.iter().any(|arg| {
+        let lower = arg.to_ascii_lowercase();
+        lower.contains("eglantine") && (lower.ends_with(".appimage") || lower.contains("/eglantine"))
+    });
+    if appimage_arg { return true; }
+    let Ok(data) = fs::read(proc.join("environ")) else { return false };
+    data.split(|byte| *byte == 0).any(|entry| {
+        entry.starts_with(b"APPIMAGE=")
+            && String::from_utf8_lossy(entry).to_ascii_lowercase().contains("eglantine")
+    })
+}
+
+fn open_save_count(pid: u32, roots: &[PathBuf]) -> usize {
+    let mut count = 0;
+    let Ok(fds) = fs::read_dir(format!("/proc/{pid}/fd")) else { return 0 };
+    for fd in fds.flatten() {
+        let Ok(path) = fs::read_link(fd.path()) else { continue };
+        // "/proc/<pid>/fd" links generally use absolute paths. Strip deleted suffix.
+        let display = path.to_string_lossy();
+        let normalized = Path::new(display.strip_suffix(" (deleted)").unwrap_or(&display));
+        if roots.iter().any(|root| normalized.starts_with(root)) { count += 1; }
+    }
+    count
+}
+
 fn process_games() -> Vec<(u32,Option<String>)> {
     let mut games=Vec::new();
     if let Ok(procs)=fs::read_dir("/proc") {
@@ -10,7 +39,7 @@ fn process_games() -> Vec<(u32,Option<String>)> {
             let args:Vec<String>=raw.split(|b|*b==0).filter(|b|!b.is_empty()).map(|b|String::from_utf8_lossy(b).into_owned()).collect();
             let executable=args.first().and_then(|a|Path::new(a).file_name()).and_then(OsStr::to_str).unwrap_or("").to_lowercase();
             let actual=fs::read_link(p.path().join("exe")).ok().and_then(|a|a.file_name().map(|n|n.to_string_lossy().to_lowercase())).unwrap_or_default();
-            if ![executable.as_str(),actual.as_str()].iter().any(|x|x.contains("eglantine")||*x=="eden-cli"){continue}
+            if !is_eglantine_process(&p.path(), &args, &executable, &actual) {continue}
             let mut game=None;
             for (i,arg) in args.iter().enumerate() {
                 let path=if arg=="--game"||arg=="-g" {args.get(i+1).map(String::as_str)}
@@ -102,7 +131,8 @@ fn main(){
                 }
             }
         }
-        println!("[Checkpoint] {} game process(es), {} save files",games.len(),current.len());
+        let open_count: usize = games.iter().map(|(pid, _)| open_save_count(*pid, &roots)).sum();
+        println!("[Checkpoint] {} Eglantine process(es), {} save files; {} currently open by Eglantine",games.len(),current.len(),open_count);
         old_games=Some(games.clone());old_files=Some(current);
         if let Some(path)=&remote{
             match Command::new("rclone").args(["lsf","--recursive","--files-only","--format","pst",path]).output(){
