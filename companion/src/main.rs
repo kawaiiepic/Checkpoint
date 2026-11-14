@@ -165,7 +165,7 @@ fn notice(message:&str,desktop:bool){
 fn main(){
     let mut roots:Vec<PathBuf>=Vec::new();let mut remote=None;let mut active=30u64;let mut idle=30u64;let mut desktop=false;let mut once=false;let mut log_override:Option<PathBuf>=None;let mut refresh_titles=false;let mut status_json=false;let mut sync_once=false;let mut configure_sync:Option<(String,String)>=None;let mut configure_webdav:Option<(String,String)>=None;let mut test_webdav=false;let mut list_backups:Option<String>=None;
     let mut restore_backup:Option<String>=None;let mut restore_target:Option<PathBuf>=None;
-    let mut confirm_restore=false;let mut sync_adopt:Option<String>=None;
+    let mut confirm_restore=false;let mut sync_adopt:Option<String>=None;let mut sync_reseed:Option<String>=None;
     let mut args=env::args().skip(1);
     while let Some(a)=args.next(){
         match a.as_str(){
@@ -179,6 +179,7 @@ fn main(){
             "--status-json"=>status_json=true,
             "--backup-once"|"--sync-once"=>sync_once=true,
             "--sync-adopt"=>sync_adopt=args.next(),
+            "--sync-reseed"=>sync_reseed=args.next(),
             "--test-webdav"=>test_webdav=true,
             "--list-backups"=>list_backups=args.next(),
             "--restore-backup"=>restore_backup=args.next(),
@@ -209,7 +210,7 @@ fn main(){
                     }
                 }
             },
-            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--sync-once] [--sync-adopt TITLE_ID] [--backup-once] [--list-backups TITLE_ID] [--restore-backup SNAPSHOT_REF --to SAVE_DIR --confirm-restore] [--notify] [--once]");return},
+            "-h"|"--help"=>{println!("checkpoint-companion [--save-dir PATH]... [--remote rclone:folder] [--log-file PATH] [--active-seconds 30] [--idle-seconds 30] [--refresh-titles] [--status-json] [--configure-sync BACKEND DEST] [--configure-webdav HTTPS_URL USER] [--test-webdav] [--sync-once] [--sync-adopt TITLE_ID] [--sync-reseed TITLE_ID] [--backup-once] [--list-backups TITLE_ID] [--restore-backup SNAPSHOT_REF --to SAVE_DIR --confirm-restore] [--notify] [--once]");return},
             _=>{eprintln!("Unknown argument: {a}");std::process::exit(2)}
         }
     }
@@ -256,6 +257,13 @@ fn main(){
     if let Some((backend,destination))=configure_sync {
         if let Err(e)=sync::configure(&backend,&destination) {eprintln!("Config error: {e}");std::process::exit(2)}
         println!("[Checkpoint] Global backup destination saved");return;
+    }
+    if let Some(title)=sync_reseed {
+        match cross_sync::reseed(&title) {
+            Ok(())=>println!("[Checkpoint] Cloud reseed complete for {title}"),
+            Err(error)=>{eprintln!("[Checkpoint] Cloud reseed failed: {error}");std::process::exit(1)}
+        }
+        return;
     }
     if let Some(title)=sync_adopt {
         match cross_sync::run(Some(&title)) {

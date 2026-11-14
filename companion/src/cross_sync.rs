@@ -217,7 +217,7 @@ fn one(cfg:&sync::Config,id:&str,save:&discovery::SaveLocation,
                 (true,true)=>Err(format!("CONFLICT {id}: both local and cloud saves changed; no overwrite performed. To preserve local progress, stop here; to choose cloud and keep a local recovery copy, run --sync-adopt {id}"))
             }
         }
-        (Some(_),None)=>Err(format!("CONFLICT {id}: cloud save missing after previous sync; refusing to overwrite or recreate it"))
+        (Some(_),None)=>Err(format!("CONFLICT {id}: cloud save missing after previous sync; refusing to overwrite or recreate it automatically. If you intentionally deleted the cloud copy, run --sync-reseed {id}"))
     }
 }
 struct Guard{path:PathBuf}
@@ -262,4 +262,45 @@ pub fn run(adopt:Option<&str>)->Result<Summary,String>{
     }
     summary.games=state.bases.keys().count();
     Ok(summary)
+}
+
+/// Explicit recovery when the user intentionally removed the remote Checkpoint folder.
+/// Does not clear the on-disk sync base until a fresh cloud save has been published.
+pub fn reseed(title: &str) -> Result<(), String> {
+    if !discovery::valid_title_id(title) {return Err("Invalid Switch 2 title ID".into());}
+    if !crate::process_games().is_empty() {
+        return Err("Close Eglantine before recreating the cloud save".into());
+    }
+    let cfg=sync::load()?.ok_or("No cloud destination configured")?;
+    if cfg.backend!="webdav" {
+        return Err("Cloud reseeding requires native WebDAV".into());
+    }
+    let _guard=lock()?;
+    let mut state=read_state()?;
+    let saves=sync::local_entries().into_iter()
+        .filter(|(id,_)|id==title).map(|(_,save)|save).collect::<Vec<_>>();
+    if saves.len()!=1 {
+        return Err(format!("Expected exactly one existing local save for {title}, found {}",saves.len()));
+    }
+    let save=&saves[0];
+    let key=save_key(&cfg,title,save);
+    if !state.bases.contains_key(&key) {
+        return Err("This game has no previous sync association; use --sync-once instead".into());
+    }
+    if webdav::get_current(&cfg,title)?.is_some() {
+        return Err("A cloud current save already exists; refusing to replace it. Resolve the conflict instead".into());
+    }
+    // In-memory only: if publication fails, the durable sync association is unchanged.
+    let previous=state.bases.remove(&key);
+    match one(&cfg,title,save,&mut state,false) {
+        Ok("uploaded") => {
+            println!("[Checkpoint] Recreated cloud current save from local {title}; local save unchanged");
+            Ok(())
+        }
+        Ok(_) => Err("Unexpected reseed result".into()),
+        Err(error) => {
+            if let Some(base)=previous { state.bases.insert(key,base); }
+            Err(format!("Cloud reseed failed; previous association preserved: {error}"))
+        }
+    }
 }
