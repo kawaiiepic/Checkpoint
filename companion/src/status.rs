@@ -6,6 +6,7 @@ use std::{path::PathBuf, time::{Duration, SystemTime}};
 pub struct Snapshot {
     pub running: bool,
     pub process_count: usize,
+    pub game_running: bool,
     pub game: Option<String>,
     pub title_id: Option<String>,
     pub save_roots: Vec<String>,
@@ -49,7 +50,8 @@ pub fn snapshot(extra: &[PathBuf], log_override: Option<&PathBuf>) -> Snapshot {
         Err(error) => (false,0,Some(error)),
     };
     Snapshot {
-        running: !processes.is_empty(), process_count: processes.len(), game, title_id,
+        running: !processes.is_empty(), process_count: processes.len(),
+        game_running: crate::activity::game_active_or_unknown(), game, title_id,
         save_roots: roots.iter().map(|r|r.to_string_lossy().into_owned()).collect(),
         saves, watched_files, last_modified_ms,
         backup_configured, backed_up_games, backup_error

@@ -209,7 +209,7 @@ pub fn backup_idle() -> Result<(usize,usize,usize), String> {
             result.uploaded,result.downloaded,result.conflicts,result.errors);
         return Ok((result.uploaded,result.errors+result.conflicts,result.games));
     }
-    if !crate::process_games().is_empty() {
+    if crate::activity::game_active_or_unknown() {
         return Err("Eglantine is running; refusing to back up active saves".into());
     }
     let roots=discovery::candidate_roots(&[],&[]);
@@ -293,7 +293,7 @@ pub fn restore_snapshot(reference: &str, target: &Path, confirm: bool) -> Result
     if !confirm {return Err("Restore requires --confirm-restore and an explicit --to destination".into());}
     let cfg=load()?.ok_or("No backup destination configured")?;
     if cfg.backend!="webdav" {return Err("Cloud restore currently requires native WebDAV".into());}
-    if !crate::process_games().is_empty() {
+    if crate::activity::game_active_or_unknown() {
         return Err("Close Eglantine completely before restoring saves".into());
     }
     let segments:Vec<&str>=reference.split('/').collect();

@@ -6,6 +6,7 @@ mod status;
 mod titles;
 mod nup;
 mod installed;
+mod activity;
 use std::{collections::BTreeMap, env, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command, thread, time::{Duration, Instant, UNIX_EPOCH}};
 type Files = BTreeMap<PathBuf, (u64,u128)>;
 
@@ -384,7 +385,7 @@ fn main(){
                 Err(e)=>eprintln!("[Checkpoint] could not run rclone: {e}"),
             }
         }
-        if games.is_empty() {
+        if !activity::game_active_or_unknown() {
             match sync::backup_idle() {
                 Ok((uploaded,failed,total)) if uploaded>0 || failed>0 => {
                     println!("[Checkpoint] Automatic backup: {uploaded} new snapshots, {failed} failed; {total} games backed up");

@@ -102,7 +102,7 @@ fn host_id()->String {
 }
 fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
     id:&str,expected_local:&str)->Result<(),String>{
-    if !crate::process_games().is_empty(){return Err("Emulator started; refusing restore".into());}
+    if crate::activity::game_active_or_unknown(){return Err("Emulator started; refusing restore".into());}
     let parent=source.parent().ok_or("Invalid save parent")?;
     let stem=source.file_name().ok_or("Invalid save name")?.to_string_lossy();
     let name=format!(".checkpoint-sync-{stem}-{}",unique_generation());
@@ -124,7 +124,7 @@ fn install(cfg:&sync::Config,current:&webdav::CurrentResponse,source:&Path,
         let _=fs::remove_dir_all(&staged);
         return Err("Cloud changed during download; local save untouched".into());
     }
-    if !crate::process_games().is_empty(){let _=fs::remove_dir_all(&staged);return Err("Emulator started during download".into());}
+    if crate::activity::game_active_or_unknown(){let _=fs::remove_dir_all(&staged);return Err("Emulator started during download".into());}
     if collect(source)?.1!=expected_local {
         let _=fs::remove_dir_all(&staged);
         return Err("Local save changed during download; refusing to replace it".into());
@@ -155,7 +155,7 @@ fn install_missing(cfg:&sync::Config,current:&webdav::CurrentResponse,
         webdav::download_current(cfg,&current.manifest,&staged)?;
         let (_,digest)=collect(&staged)?;
         if digest!=current.manifest.digest{return Err("Cloud content hash mismatch".into());}
-        if !crate::process_games().is_empty(){return Err("Emulator started during sync".into());}
+        if crate::activity::game_active_or_unknown(){return Err("Emulator started during sync".into());}
         if webdav::get_current(cfg,id)?.as_ref().map(|x|x.etag.as_str())!=Some(current.etag.as_str()) {
             return Err("Cloud changed during download".into());
         }
@@ -265,7 +265,7 @@ pub fn count()->usize{
 pub fn run(adopt:Option<&str>)->Result<Summary,String>{
     let cfg=sync::load()?.ok_or("No cloud destination configured")?;
     if cfg.backend!="webdav" {return Err("Cross-device sync requires native WebDAV".into());}
-    if !crate::process_games().is_empty(){return Err("Eglantine is running; sync only runs while closed".into());}
+    if crate::activity::game_active_or_unknown(){return Err("Eglantine is running; sync only runs while closed".into());}
     let _guard=lock()?;
     let mut state=read_state()?;
     // This allowlist is mandatory, even for existing saves. Extracted games
@@ -338,7 +338,7 @@ pub fn run(adopt:Option<&str>)->Result<Summary,String>{
 /// Does not clear the on-disk sync base until a fresh cloud save has been published.
 pub fn reseed(title: &str) -> Result<(), String> {
     if !discovery::valid_title_id(title) {return Err("Invalid Switch 2 title ID".into());}
-    if !crate::process_games().is_empty() {
+    if crate::activity::game_active_or_unknown() {
         return Err("Close Eglantine before recreating the cloud save".into());
     }
     let cfg=sync::load()?.ok_or("No cloud destination configured")?;

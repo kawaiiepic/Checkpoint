@@ -82,7 +82,7 @@ class Plugin:
                 self.status = current
                 self.error = None
                 # Every ~30 seconds while idle. Rust checks again immediately before copying.
-                if not current.get("running"):
+                if not current.get("game_running", current.get("running", True)):
                     backup_counter += 1
                     if backup_counter >= 6:
                         backup_counter = 0
